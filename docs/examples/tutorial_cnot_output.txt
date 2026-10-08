@@ -1,0 +1,9 @@
+logical {(0, 0, 0): Pauli.X, (0, 0, 3): Pauli.X, (1, 1, 3): Pauli.X}
+logical {(0, 0, 0): Pauli.Z, (1, 1, 0): Pauli.Z, (1, 1, 3): Pauli.Z}
+logical {(0, 0, 3): Pauli.Z, (1, 1, 0): Pauli.Z, (1, 1, 3): Pauli.Z}
+logical {(1, 1, 0): Pauli.X, (1, 1, 3): Pauli.X}
+noiseless shots: 1024
+detector events: 0
+logical flips: 0
+noisy shots: 1024
+any-logical failures: 16

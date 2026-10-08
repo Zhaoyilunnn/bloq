@@ -1,0 +1,59 @@
+[package]
+name = "bloq_stim"
+version.workspace = true
+description = "Stim emission for bloq circuits and programs."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+bloq_circuit.workspace = true
+bloq_ir.workspace = true
+bloq_utils.workspace = true
+glam.workspace = true
+itertools.workspace = true
+itoa.workspace = true
+rustc-hash.workspace = true
+stim = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[features]
+verify = ["dep:stim"]
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc"]
+
+[dev-dependencies]
+# Direct paths, no version: keeps internal dev-deps out of the published
+# manifest (cargo strips version-less path dev-deps), which both breaks the
+# bloq_compile ⇄ bloq_stim dev-cycle and decouples publish ordering.
+bloq_compile = { path = "../bloq_compile" }
+bloq_graph = { path = "../bloq_graph" }
+bloq_test.workspace = true
+criterion.workspace = true
+hotpath.workspace = true
+insta.workspace = true
+[[bench]]
+name = "bench"
+harness = false
+
+[[test]]
+name = "compile_stim_backend"
+required-features = ["verify"]
+
+[[test]]
+name = "clifford_proxy_distance"
+required-features = ["verify"]
+
+[[test]]
+name = "edge_subdivision"
+required-features = ["verify"]
+
+[[test]]
+name = "flatten"
+required-features = ["verify"]
+
+[lints]
+workspace = true

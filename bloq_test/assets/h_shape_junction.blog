@@ -1,0 +1,13 @@
+BLOG 1.0
+
+0: Port [1, -1, 0] role=input
+1: XXZ [0, 0, 0]
+2: Port [1, 1, 0] role=output
+3: Port [0, -1, 0] role=input
+4: XXZ [1, 0, 0]
+5: Port [0, 1, 0] role=output
+[0, 0, 0] -> +X
+[0, 0, 0] -> +Y
+[0, -1, 0] -> +Y
+[1, 0, 0] -> -Y
+[1, 0, 0] -> +Y

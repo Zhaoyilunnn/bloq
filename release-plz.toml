@@ -1,0 +1,58 @@
+# GitHub Actions publication requires RELEASE_PUBLISH_ENABLED=true.
+# Local release-plz, cargo publish, and uv publish bypass that Actions gate.
+# Setup and first-release steps: docs/releasing.md.
+
+[workspace]
+release_always = false
+changelog_config = "cliff.toml"
+# Every crate inherits `workspace.package.version`; when publishing is enabled,
+# the workspace releases as one unit anchored on the `bloq` package below.
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+# cargo-semver-checks would rebuild heavy deps in CI; off for now, worth
+# revisiting per-package once the lib APIs stabilize.
+semver_check = false
+pr_labels = ["release"]
+
+[[package]]
+name = "bloq"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+# Fold commits from the other publishable crates into the root changelog.
+changelog_include = [
+  "bloq-cli",
+  "bloq_circuit",
+  "bloq_compile",
+  "bloq_editor",
+  "bloq_graph",
+  "bloq_ir",
+  "bloq_lassynth",
+  "bloq_stim",
+  "bloq_utils",
+  "bloq_vm",
+]
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_name = "v{{ version }}"
+# Stable versions create normal GitHub releases and update Latest.
+git_release_type = "auto"
+git_release_latest = true
+
+# These inherit the workspace version but are not crates.io packages.
+# Python-only releases need a manual version/changelog PR; see docs/releasing.md.
+[[package]]
+name = "bloq_py"
+release = false
+publish = false
+
+[[package]]
+name = "bloq_test"
+release = false
+publish = false
+
+[[package]]
+name = "xtask"
+release = false
+publish = false

@@ -1,0 +1,149 @@
+[workspace]
+resolver = "3"
+members = [
+  "bloq",
+  "bloq_cli",
+  "bloq_lassynth",
+  "bloq_graph",
+  "bloq_editor",
+  "bloq_utils",
+  "bloq_circuit",
+  "bloq_ir",
+  "bloq_compile",
+  "bloq_vm",
+  "bloq_stim",
+  "bloq_test",
+  "bloq_py",
+  "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Floor derived from the highest `rust-version` in the dependency tree.
+rust-version = "1.95.0"
+authors = ["Yiming Zhang <quantuminm@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/inmzhang/bloq"
+readme = "README.md"
+
+[workspace.dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.13"
+ariadne = "0.6"
+base64 = "0.23.0"
+bevy = { version = "0.19.0", default-features = false }
+bevy_egui = { version = "0.42.0", default-features = false }
+bevy_rich_text3d = { version = "0.7.0", default-features = false }
+binar = "0.1.5"
+# Internal crates carry an exact (`=`) version requirement: the workspace
+# releases in lockstep, so a published crate must resolve to siblings from
+# the same release, never a stray newer patch (Bevy does the same).
+bloq_cli = { package = "bloq-cli", path = "bloq_cli", version = "=0.1.0" }
+bloq_circuit = { path = "bloq_circuit", version = "=0.1.0" }
+bloq_compile = { path = "bloq_compile", version = "=0.1.0" }
+bloq_graph = { path = "bloq_graph", version = "=0.1.0" }
+bloq_ir = { path = "bloq_ir", version = "=0.1.0" }
+bloq_lassynth = { path = "bloq_lassynth", version = "=0.1.0" }
+bloq_stim = { path = "bloq_stim", version = "=0.1.0" }
+bloq_vm = { path = "bloq_vm", version = "=0.1.0" }
+# Deliberately version-less: bloq_test is dev-only and unpublished; cargo
+# strips path-only dev-deps from published manifests, keeping it private.
+bloq_test = { path = "bloq_test" }
+bloq_utils = { path = "bloq_utils", version = "=0.1.0" }
+chumsky = { version = "0.13", default-features = false, features = ["std", "pratt"] }
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+color-eyre = "0.6.5"
+criterion = "0.8.2"
+egui_extras = { version = "0.36.2", default-features = false, features = ["syntect"] }
+getrandom = "0.4.2"
+hotpath = "0.26"
+indicatif = "0.18"
+# Pinned to match the glam re-exported by bevy 0.19 (0.32); a newer minor
+# would create a second glam copy whose Vec3/IVec3 don't unify with bevy's.
+glam = "0.32"
+gltf-json = { version = "1.4.1", features = ["KHR_materials_unlit", "names"] }
+insta = "1.48.0"
+itertools = "0.15.0"
+itoa = "1.0"
+js-sys = "0.3"
+num-traits = "0.2"
+openqasm = "0.1.2"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
+# The quantum engine used by `bloq_vm`.
+ticit = { version = "0.2.0", default-features = false }
+petgraph = "0.8.3"
+postcard = { version = "1.1.3", features = ["use-std"] }
+quizx = "0.3.0"
+rand = "0.10.3"
+rfd = "0.17.2"
+layout-rs = "0.1.3"
+rustc-hash = "2.1.2"
+rustsat = { version = "0.7.5", default-features = false }
+rustsat-kissat = "0.7.5"
+rstest = "0.27"
+same-file = "1.0.6"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0"
+smallvec = "1.16.2"
+stim = "0.4.5"
+strum = { version = "0.28", features = ["derive"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+tempfile = "3.25.0"
+thiserror = "2.0.21"
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+web-time = "1.1.0"
+winresource = "0.1.31"
+winit = { version = "0.30.13", default-features = false }
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unreachable_pub = "warn"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+allow_attributes_without_reason = "warn"
+assertions_on_result_states = "warn"
+manual_midpoint = "warn"
+match_same_arms = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+redundant_closure_for_method_calls = "warn"
+too_long_first_doc_paragraph = "warn"
+unnecessary_wraps = "warn"
+unwrap_used = "warn"
+upper_case_acronyms = "allow"
+
+[profile.dev.package]
+insta.opt-level = 3
+# Optimize the simulation engine while retaining the dev profile's checks.
+ticit.opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.profiling]
+inherits = "release"
+debug = true
+
+# Profile the bevy CLI uses for `bevy build --release ... web` (the CI deploy).
+# Tuned to minimize first-load download + browser-compile time: opt-level "z"
+# optimizes purely for code size (smaller .wasm → less to download and to
+# JIT-compile in the browser) at the cost of some runtime speed, which this
+# interaction-bound editor does not miss; `strip` drops the name/debug sections
+# wasm-opt leaves behind.
+[profile.web-release]
+inherits = "release"
+opt-level = "z"
+strip = true

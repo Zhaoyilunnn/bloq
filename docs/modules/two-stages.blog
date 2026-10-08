@@ -1,0 +1,16 @@
+BLOG 1.0
+import "stage.blog" as Stage
+
+module main {
+  in q_in: data = 0
+  out q_out: data = 1
+
+  lower: Stage @ [0, 0, 0]
+  upper: Stage @ [0, 0, 1] rotate Z 180
+
+  0: Port [0, 0, -1] role=input <q_in>
+  1: Port [0, 0, 2] role=output <q_out>
+  0 -> lower.q_in
+  lower.q_out -> upper.q_in
+  upper.q_out -> 1
+}

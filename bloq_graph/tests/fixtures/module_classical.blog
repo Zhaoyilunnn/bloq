@@ -1,0 +1,40 @@
+BLOG 1.0
+
+module MeasureZ {
+  in q: data = 0
+  out bit = mz
+
+  0: Port [0, 0, 0] role=input
+  1: ZXZ [0, 0, 1]
+  0 -> +Z
+
+  mz = measure 1
+}
+
+module SelectCap {
+  in q: data = 0
+  in basis
+
+  0: Port [0, 0, 0] role=input
+  1: XZX [0, 0, 1]
+  2: XZ [0, 0, 2]
+  0 -> +Z
+  1 -> +Z
+
+  resolve 2 if basis
+}
+
+module main {
+  in first: data = 0
+  in second: data = 1
+  out selector = read.bit
+
+  read: MeasureZ @ [0, 0, 0]
+  cap: SelectCap @ [1, 0, 2]
+
+  0: Port [0, 0, 0] role=input
+  1: Port [1, 0, 2] role=input
+  0 -> read.q
+  1 -> cap.q
+  read.bit => cap.basis
+}

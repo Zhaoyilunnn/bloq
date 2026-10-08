@@ -1,0 +1,184 @@
+name: Build Bloq Website
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the assembled site to GitHub Pages and retain its snapshots'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Optional existing release tag to add as an immutable documentation snapshot'
+        type: string
+        default: ''
+      make_stable:
+        description: 'Make release_tag the stable documentation alias'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'justfile'
+      - 'docs/**'
+      - 'tools/site.py'
+      - 'tools/test_site.py'
+      - 'bloq*/**'
+      - '.github/workflows/website.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'justfile'
+      - 'docs/**'
+      - 'tools/site.py'
+      - 'tools/test_site.py'
+      - 'bloq*/**'
+      - '.github/workflows/website.yml'
+
+# Serialize snapshot updates so two publications cannot lose older versions.
+concurrency:
+  group: bloq-website
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  build:
+    name: Build Website, APIs, and Editor
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust and WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bloq-rust-${{ runner.os }}-v1
+          workspaces: |
+            . -> target
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libasound2-dev libudev-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Install bevy_cli
+        run: cargo binstall --git https://github.com/TheBevyFlock/bevy_cli --version 0.1.0-alpha.2 --locked bevy_cli
+
+      # gh-pages is durable snapshot storage. Preview artifacts have finite
+      # retention and must never be the only copy of release documentation.
+      - name: Restore retained documentation snapshots
+        run: |
+          mkdir -p target/site
+          retained_ref=$(git ls-remote --heads origin gh-pages)
+          if [ -n "$retained_ref" ]; then
+            git fetch --depth=1 origin gh-pages
+            git archive FETCH_HEAD | tar -x -C target/site
+          fi
+
+      - name: Check version maintenance
+        run: python3 tools/test_site.py
+
+      - name: Assemble website
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          MAKE_STABLE: ${{ inputs.make_stable }}
+        run: |
+          args=()
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+          fi
+          if [ -n "$RELEASE_TAG" ]; then
+            args+=(--tag "$RELEASE_TAG")
+            if [ "$MAKE_STABLE" = true ]; then
+              args+=(--stable "$RELEASE_TAG")
+            fi
+          elif [ "$MAKE_STABLE" = true ]; then
+            echo 'make_stable requires an existing release_tag' >&2
+            exit 1
+          fi
+          python3 tools/site.py build "${args[@]}"
+
+      - name: Upload reviewable site artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bloq-site-preview
+          path: target/site
+          include-hidden-files: true
+          retention-days: 30
+
+      - name: Upload Pages artifact for explicitly requested publication
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/site
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bloq-site-preview
+          path: site
+
+      - name: Retain published snapshots on gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git -C site init
+          git -C site remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          retained_ref=$(git -C site ls-remote --heads origin gh-pages)
+          if [ -n "$retained_ref" ]; then
+            git -C site fetch --depth=1 origin gh-pages
+            git -C site reset --soft FETCH_HEAD
+          fi
+          git -C site config user.name 'github-actions[bot]'
+          git -C site config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C site add --all
+          if ! git -C site diff --cached --quiet; then
+            git -C site commit -m "docs: publish website for ${GITHUB_SHA}"
+            git -C site push origin HEAD:gh-pages
+          fi
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

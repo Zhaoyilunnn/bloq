@@ -1,0 +1,20 @@
+[package]
+name = "bloq_test"
+version.workspace = true
+description = "Shared test and benchmark fixture generation for bloq."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Dev-only fixture crate; never published (also lets publishable crates
+# dev-depend on it version-less so cargo strips it at publish).
+publish = false
+
+[dependencies]
+bloq_graph.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

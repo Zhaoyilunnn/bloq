@@ -1,0 +1,81 @@
+BLOG 1.0
+# Continuing branches with direct shared seams and three input selectors.
+# probe_conditional_cz checks all eight static choices against QuiZX.
+module main {
+  in enable0
+  in enable1
+  in enable2
+  in q_in: data = 0
+  out q_out: data = 1
+  in i0_in: data = 2
+  out i0_out: data = 3
+  in i1_in: data = 4
+  out i1_out: data = 5
+  in i2_in: data = 6
+  out i2_out: data = 7
+
+  0: Port [1, -1, 0] role=input
+  1: Port [1, 3, 0] role=output
+  2: Port [0, 0, -1] role=input
+  3: Port [0, 0, 1] role=output
+  4: Port [0, 1, -1] role=input
+  5: Port [0, 1, 1] role=output
+  6: Port [0, 2, -1] role=input
+  7: Port [0, 2, 1] role=output
+
+  # Shared seams: the middle two connect regions directly, without extra cubes.
+  [1, -1, 0] -> +Y
+  [1, 0, 0] -> +Y
+  [1, 1, 0] -> +Y
+  [1, 2, 0] -> +Y
+
+  branch cz0 {
+    false {
+      10: XZX [0, 0, 0]
+      11: XXZ [1, 0, 0]
+      [0, 0, -1] -> +Z
+      [0, 0, 0] -> +Z
+    }
+    true {
+      12: ZXZ [0, 0, 0]
+      13: XXZ [1, 0, 0]
+      [0, 0, -1] -H> +Z
+      [0, 0, 0] -H> +Z
+      [0, 0, 0] -> +X
+    }
+  }
+  branch cz1 {
+    false {
+      20: XZX [0, 1, 0]
+      21: XXZ [1, 1, 0]
+      [0, 1, -1] -> +Z
+      [0, 1, 0] -> +Z
+    }
+    true {
+      22: ZXZ [0, 1, 0]
+      23: XXZ [1, 1, 0]
+      [0, 1, -1] -H> +Z
+      [0, 1, 0] -H> +Z
+      [0, 1, 0] -> +X
+    }
+  }
+  branch cz2 {
+    false {
+      30: XZX [0, 2, 0]
+      31: XXZ [1, 2, 0]
+      [0, 2, -1] -> +Z
+      [0, 2, 0] -> +Z
+    }
+    true {
+      32: ZXZ [0, 2, 0]
+      33: XXZ [1, 2, 0]
+      [0, 2, -1] -H> +Z
+      [0, 2, 0] -H> +Z
+      [0, 2, 0] -> +X
+    }
+  }
+
+  resolve cz0 if enable0
+  resolve cz1 if enable1
+  resolve cz2 if enable2
+}

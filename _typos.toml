@@ -1,0 +1,12 @@
+[files]
+# Preserve upstream legal text and generated figure data verbatim.
+extend-exclude = ["**/THIRD-PARTY-NOTICES.txt", "tools/third_party_licenses.json", "**/*.svg"]
+
+[default]
+extend-ignore-re = ['\b[0-9a-f]{7,40}\b'] # Git hashes.
+
+[default.extend-words]
+# `binar` is the workspace bit-vector crate; `anc` abbreviates "ancilla" in
+# QASM fixtures and test messages.
+binar = "binar"
+anc = "anc"

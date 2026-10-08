@@ -1,0 +1,57 @@
+[package]
+name = "bloq"
+version.workspace = true
+description = "Block graph compiler for fault-tolerant quantum circuits: Rust facade."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lib]
+name = "bloq"
+
+[features]
+default = []
+# glTF export in the re-exported `graph` module (forwards `bloq_graph/gltf`).
+gltf = ["bloq_graph/gltf"]
+# Stim-based flow verification in the re-exported `stim` module.
+verify = ["bloq_stim/verify"]
+# Pure-Rust graph verification, independently usable without native Stim.
+graph-verify = ["bloq_graph/verify"]
+# Native-only companion Rust port of Python LaSsynth using Kissat.
+synth = ["dep:bloq_lassynth"]
+# Bloq IR execution, dynamic emulation, and physical verification.
+vm = ["dep:bloq_vm", "dep:serde_json"]
+# Opt-in profiling for the compiler pipeline.
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc"]
+
+[dependencies]
+bloq_circuit.workspace = true
+bloq_compile.workspace = true
+bloq_graph.workspace = true
+bloq_ir.workspace = true
+bloq_lassynth = { workspace = true, optional = true }
+bloq_stim.workspace = true
+bloq_vm = { workspace = true, optional = true }
+bloq_utils.workspace = true
+# `glam` is public API here: the prelude re-exports `IVec3`, the coordinate type
+# every block-graph and qubit-layout signature below uses.
+glam.workspace = true
+hotpath.workspace = true
+serde_json = { workspace = true, optional = true }
+strum.workspace = true
+thiserror.workspace = true
+
+# docs.rs builds with every feature so the gltf/verify surfaces show up.
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.cargo-machete]
+# This dependency enables profiling features across the compiler pipeline.
+ignored = ["hotpath"]
+
+[lints]
+workspace = true

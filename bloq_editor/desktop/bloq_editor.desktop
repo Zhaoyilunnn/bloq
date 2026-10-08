@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Bloq Editor
+Comment=Surface-code block graph editor
+Exec=bloq_editor
+Icon=bloq_editor
+Terminal=false
+Categories=Education;Science;
+StartupWMClass=bloq_editor

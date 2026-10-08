@@ -1,0 +1,3 @@
+# Test failures already report their exact location; production invariants
+# must explain why an Option or Result cannot fail.
+allow-unwrap-in-tests = true

@@ -1,0 +1,153 @@
+"""Python bindings for the bloq fault-tolerant quantum circuit compiler.
+
+Thin facade over the Rust extension module `bloq._core`. The typical
+pipeline: build or load a `BlockGraph` (e.g. via the `GalleryItem` enum or
+`BlockGraph.from_text`), `compile` it to a `Bloq` program, then either
+`emit_stim` for sampling with the PyPI `stim` package or `lower_vm` for a
+dynamic hardware run. Advanced circuit, template, and node inspection types
+live in `bloq.ir`.
+
+Examples:
+    >>> import bloq
+    >>> graph = bloq.GalleryItem.X_MEMORY.load()
+    >>> program = bloq.compile(graph, distance=3)
+    >>> program.node_count > 0
+    True
+"""
+
+from bloq import ir
+from bloq._core import (
+    HONEST_T_TAG,
+    Action,
+    ActionDag,
+    Basis,
+    BinaryDecodeError,
+    Block,
+    BlockGraph,
+    BlockGraphError,
+    BlockKind,
+    Bloq,
+    BloqError,
+    BloqValidationError,
+    Branch,
+    BranchArm,
+    CompileContext,
+    CompileError,
+    CompileWarning,
+    Direction,
+    Expr,
+    FeedbackTarget,
+    InvalidArgumentError,
+    IsolatedTAttemptArtifacts,
+    IsolatedTAttemptManifest,
+    LowerError,
+    MeasureTarget,
+    ParseError,
+    Pauli,
+    PauliBasis,
+    PauliString,
+    Pipe,
+    PlanStim,
+    RuntimeError,
+    Stabilizer,
+    StabilizerGenerator,
+    StimEmissionError,
+    StimSegment,
+    StimSegments,
+    TextParseError,
+    UDirection,
+    VmProgram,
+    VmRunResult,
+    ZXEdge,
+    ZXGraph,
+    ZXNode,
+    __version__,
+    clear_compile_cache,
+    clifft_to_stim_text,
+    compile,
+    compile_clifford_proxy,
+    compile_random_clifford_proxy,
+    compile_to_stim,
+    emit_isolated_t_attempts,
+    emit_plan_stim,
+    emit_stim,
+    emit_stim_segments,
+    emit_stim_segments_pair,
+    is_valid_distance,
+    lower_vm,
+    remap_stim_circuit,
+    stim_to_clifft_text,
+    to_zx_graph,
+)
+from bloq._gallery import GalleryItem
+
+# Explicit re-export list, kept sorted and in step with the imports above by
+# `tests/test_docs.py`: it checks `__all__` against this module's public
+# globals, and `docs/api.rst` against `__all__`. Deriving it from `globals()`
+# would make the first check vacuous and hide every re-export from linters and
+# type checkers, which read only a literal list.
+__all__ = [
+    "Action",
+    "ActionDag",
+    "Basis",
+    "BinaryDecodeError",
+    "Block",
+    "BlockGraph",
+    "BlockGraphError",
+    "BlockKind",
+    "Bloq",
+    "BloqError",
+    "BloqValidationError",
+    "Branch",
+    "BranchArm",
+    "CompileContext",
+    "CompileError",
+    "CompileWarning",
+    "Direction",
+    "Expr",
+    "FeedbackTarget",
+    "GalleryItem",
+    "HONEST_T_TAG",
+    "InvalidArgumentError",
+    "IsolatedTAttemptArtifacts",
+    "IsolatedTAttemptManifest",
+    "LowerError",
+    "MeasureTarget",
+    "ParseError",
+    "Pauli",
+    "PauliBasis",
+    "PauliString",
+    "Pipe",
+    "PlanStim",
+    "RuntimeError",
+    "Stabilizer",
+    "StabilizerGenerator",
+    "StimEmissionError",
+    "StimSegment",
+    "StimSegments",
+    "TextParseError",
+    "UDirection",
+    "VmProgram",
+    "VmRunResult",
+    "ZXEdge",
+    "ZXGraph",
+    "ZXNode",
+    "__version__",
+    "clear_compile_cache",
+    "clifft_to_stim_text",
+    "compile",
+    "compile_clifford_proxy",
+    "compile_random_clifford_proxy",
+    "compile_to_stim",
+    "emit_isolated_t_attempts",
+    "emit_plan_stim",
+    "emit_stim",
+    "emit_stim_segments",
+    "emit_stim_segments_pair",
+    "ir",
+    "is_valid_distance",
+    "lower_vm",
+    "remap_stim_circuit",
+    "stim_to_clifft_text",
+    "to_zx_graph",
+]

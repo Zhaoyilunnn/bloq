@@ -1,0 +1,14 @@
+Bloq IR
+├── Compiled Templates: 10
+├── Nodes: 20
+│   ├── Compute: 6
+│   ├── Discard: 0
+│   ├── Observable: 7
+│   ├── Quantum: 6
+│   └── RepeatUntilSuccess: 1
+├── Edges: 32
+│   ├── Compose: 2
+│   ├── Order: 14
+│   ├── Quantum: 5
+│   └── Value: 11
+└── Static: No

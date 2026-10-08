@@ -1,0 +1,35 @@
+BLOG 1.0
+
+module main {
+in a_in: data = 1
+out a_out: data = 0
+in b_in: data = 4
+out b_out: data = 7
+in c_in: data = 8
+out c_out: data = 11
+
+0: Port [-1, 0, 0] role=output <Out_a>
+1: Port [0, -1, 0] role=input <In_a>
+2: XXZ [0, 0, 0]
+3: XXZ [0, 1, 0]
+4: Port [1, 0, -1] <In_b>
+5: ZXZ [1, 0, 0]
+6: ZXX [1, 0, 1]
+7: Port [1, 0, 2] <Out_b>
+8: Port [1, 1, -1] <In_c>
+9: ZXZ [1, 1, 0]
+10: ZXX [1, 1, 1]
+11: Port [2, 1, 0] role=output <Out_c>
+[-1, 0, 0] -> +X
+[0, -1, 0] -> +Y
+[0, 0, 0] -> +Y
+[0, 0, 0] -> +X
+[0, 1, 0] -> +X
+[1, 0, -1] -> +Z
+[1, 0, 0] -> +Z
+[1, 0, 1] -> +Z
+[1, 0, 1] -> +Y
+[1, 1, -1] -> +Z
+[1, 1, 0] -> +Z
+[1, 1, 0] -> +X
+}

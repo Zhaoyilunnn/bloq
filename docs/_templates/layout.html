@@ -1,0 +1,15 @@
+{% extends "!layout.html" %}
+{% block extrahead %}
+{{ super() }}
+<meta name="bloq-doc-root" content="{{ pathto('index') }}">
+<meta name="bloq-page" content="{{ pagename }}.html">
+<meta name="bloq-doc-version" content="{{ bloq_docs_version }}">
+<meta name="bloq-package-version" content="{{ bloq_package_version }}">
+{% endblock %}
+{% block content %}
+{% if pagename == 'index' %}
+<div class="bloq-index">{{ super() }}</div>
+{% else %}
+{{ super() }}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,53 @@
+# Shared Cargo inputs affect every build. The action expands these YAML anchors.
+# Keep fixture/assets rules: they include source inputs outside src/.
+rust:
+  - &cargo
+    - 'Cargo.lock'
+    - 'rust-toolchain.toml'
+    - '.cargo/**'
+    - 'justfile'
+    - '.github/workflows/ci.yml'
+    - '.github/ci-paths.yml'
+    - '**/Cargo.toml'
+    - '**/build.rs'
+  - 'clippy.toml'
+  - 'bloq*/src/**'
+  - 'bloq*/tests/**'
+  - 'bloq*/benches/**'
+  - 'bloq*/examples/**'
+  - 'bloq*/assets/**'
+  - 'bloq_editor/desktop/**'
+  - 'THIRD-PARTY-NOTICES.txt'
+  - 'tools/{release_build,test_release_build}.py'
+  - 'tools/third_party_licenses.{py,json}'
+  - 'xtask/**'
+  - 'docs/fixtures/**'
+  # These Markdown files are embedded in Rust API documentation/doctests.
+  - 'README.md'
+  - 'bloq_lassynth/README.md'
+  - 'docs/{guide,releasing}.md'
+  - '!bloq_py/tests/**'
+
+python:
+  - *cargo
+  - 'bloq*/src/**'
+  - 'bloq_graph/assets/**'
+  - 'bloq_py/**'
+  - 'docs/**'
+  - 'tools/*.py'
+  - 'bloq_editor/desktop/*.py'
+  - 'CONTRIBUTING.md'
+  - '!bloq_editor/src/**'
+  - '!bloq_editor/assets/**'
+  - '!bloq_test/**'
+
+web:
+  - *cargo
+  - 'bloq*/src/**'
+  - 'bloq_graph/assets/**'
+  - 'bloq_editor/**'
+  - '!bloq_py/**'
+  - '!bloq_vm/**'
+  - '!bloq_cli/**'
+  - '!bloq_test/**'
+  - '!bloq/**'

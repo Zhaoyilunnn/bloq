@@ -1,0 +1,31 @@
+BLOG 1.0
+
+module main {
+in q_in: data = 0
+out q_out: data = 2
+
+0: Port [0, 0, 0] <In>
+1: XZX [0, 0, 1]
+2: Port [0, 0, 2] <Out>
+3: T [1, 0, 0]
+4: XZX [1, 0, 1]
+5: XZX [2, 0, 1]
+6: ZXX [2, 1, 1]
+7: ZX [2, 1, 2]
+8: Y [3, 0, 0]
+9: XZX [3, 0, 1]
+[0, 0, 0] -> +Z
+[0, 0, 1] -> +Z
+[0, 0, 1] -> +X
+[1, 0, 0] -> +Z
+[1, 0, 1] -> +X
+[2, 0, 1] -> +Y
+[2, 0, 1] -> +X
+[2, 1, 1] -> +Z
+[3, 0, 1] -> -Z
+
+mzz = measure 1 -> +X
+# Prepare -Y: the matching Y measurement cap has phase -pi/2.
+feedback Z 8
+resolve 7 if mzz
+}

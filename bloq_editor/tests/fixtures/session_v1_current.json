@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "active": 1,
+  "tabs": [
+    {
+      "id": 1,
+      "title": "Saved draft",
+      "document": {
+        "graph": "BLOG 1.0\n\n0: ZXZ [0, 0, 0]\n",
+        "inputs": [],
+        "module_program": null,
+        "pending_arm": null,
+        "false_arms": []
+      },
+      "blog": "# unfinished draft\nmodule main {",
+      "export_path": "saved.blog",
+      "definition_edit": null,
+      "view": {
+        "block_kind": "XZZ [0, 0, 0]",
+        "placement_tool": "Block",
+        "mode": "Edit",
+        "pipe_length": 2.0,
+        "transform_axis": 0,
+        "plane_height": 0,
+        "show_axis": true,
+        "show_grid": true,
+        "show_port_tags": false,
+        "bg_color": [
+          0.84705883,
+          0.8784314,
+          0.9019608,
+          1.0
+        ],
+        "selected_elements": [
+          {
+            "Block": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "branch_name": "b0",
+        "view_current_layer_only": false,
+        "show_blog_buffer": true,
+        "show_help_window": false,
+        "theme_preset": "Light",
+        "gallery_panel_expanded": false,
+        "show_side_panel": false,
+        "gallery_search": "",
+        "gallery_category": null
+      },
+      "camera": {
+        "focus": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "radius": 51.961525,
+        "alpha": 2.3561945,
+        "beta": 0.9553166
+      },
+      "compile": {
+        "code_distance": "7",
+        "format": "Stim",
+        "prepare_t_with_mpps": false
+      }
+    }
+  ]
+}

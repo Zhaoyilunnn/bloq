@@ -1,0 +1,10 @@
+BLOG 1.0
+
+module main {
+  out q0: data = 1
+
+  0: T [0, 0, 0]
+  1: Port [0, 0, 1]
+  0 -> +Z
+
+}

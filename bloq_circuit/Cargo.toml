@@ -1,0 +1,30 @@
+[package]
+name = "bloq_circuit"
+version.workspace = true
+description = "Quantum circuit representation and manipulation in bloq."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+strum.workspace = true
+bloq_utils.workspace = true
+glam = { workspace = true, features = ["serde"] }
+hotpath.workspace = true
+thiserror.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+smallvec = { workspace = true, features = ["serde"] }
+
+[lints]
+workspace = true
+
+[features]
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc"]
+
+[dev-dependencies]
+postcard.workspace = true

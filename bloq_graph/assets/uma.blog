@@ -1,0 +1,77 @@
+BLOG 1.0
+
+module main {
+in c_k: data = 5
+in c_k_plus_1: data = 10
+in c_k_xor_i_prime_k: data = 13
+in c_k_xor_t_k: data = 18
+out out_k: data = 21
+
+# SAT-synthesized from the UMA circuit in Fig. 42(c) of arXiv:2605.30455v1,
+# constrained to the Fig. 43(c) bounding box and logical port positions.
+
+0: ZZX [-1, 0, 0]
+1: XXZ [-1, 0, 1]
+2: ZZX [-1, 1, 0]
+3: XXZ [-1, 1, 1]
+4: XXZ [-1, 2, 1]
+5: Port [0, 0, -1] <c_k>
+6: XZX [0, 0, 0]
+7: ZXZ [0, 0, 1]
+8: XZX [0, 1, 0]
+9: ZXZ [0, 1, 1]
+10: Port [0, 2, -1] <c_k+1>
+11: ZXZ [0, 2, 0]
+12: ZXZ [0, 2, 1]
+13: Port [1, 0, -1] <ck_xor_qik>
+14: ZXX [1, 0, 0]
+15: ZXZ [1, 0, 1]
+16: ZZX [1, 1, 0]
+17: XXZ [1, 1, 1]
+18: Port [1, 2, -1] <ck_xor_tk>
+19: ZXX [1, 2, 0]
+20: XZZ [1, 2, 1]
+21: Port [2, 0, 1] role=output <out_k>
+22: ZZX [2, 1, 0]
+23: ZXZ [2, 1, 1]
+24: XZ [2, 1, 2] <fix_0>
+25: ZXX [2, 2, 0]
+26: ZXZ [2, 2, 1]
+27: XZ [2, 2, 2] <fix_1>
+[-1, 0, 0] -> +Y
+[-1, 0, 0] -> +X
+[-1, 0, 1] -> +Y
+[-1, 0, 1] -> +X
+[-1, 1, 0] -> +X
+[-1, 1, 1] -> +Y
+[-1, 1, 1] -> +X
+[-1, 2, 1] -> +X
+[0, 0, -1] -H> +Z
+[0, 0, 0] -H> +Z
+[0, 0, 1] -> +X
+[0, 1, 0] -H> +Z
+[0, 1, 0] -> +X
+[0, 1, 1] -> +X
+[0, 2, -1] -> +Z
+[0, 2, 0] -> +Z
+[1, 0, -1] -> +Z
+[1, 0, 0] -> +Z
+[1, 0, 0] -> +Y
+[1, 0, 1] -> +X
+[1, 1, 0] -> +Y
+[1, 1, 0] -> +X
+[1, 1, 1] -> +Y
+[1, 1, 1] -> +X
+[1, 2, -1] -H> +Z
+[1, 2, 0] -H> +Z
+[2, 1, 0] -> +Y
+[2, 1, 1] -> +Z
+[2, 2, 0] -> +Z
+[2, 2, 1] -> +Z
+
+# Stable representative of Fig. 62's m_i'_k measurement.
+m_ikprime = measure 14
+m_anc = measure 0 -> +X
+resolve 24 if !m_anc
+resolve 27 if !m_anc
+}

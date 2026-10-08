@@ -1,0 +1,168 @@
+name: CI
+
+# Always report the required CI status; job filters avoid irrelevant builds.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bevy and the native test binaries otherwise overflow hosted-runner storage.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  changes:
+    name: Select checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      checks: ${{ steps.suites.outputs.checks }}
+      web: ${{ steps.suites.outputs.web }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check workflow syntax
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash -o "$RUNNER_TEMP/download-actionlint.bash"
+          bash "$RUNNER_TEMP/download-actionlint.bash" 1.7.12 "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: .github/ci-paths.yml
+      - name: Select suites
+        id: suites
+        env:
+          RUST_CHANGED: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
+          PYTHON_CHANGED: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.python == 'true' }}
+          WEB_CHANGED: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.web == 'true' }}
+        run: |
+          suites=$(jq -cn --arg rust "$RUST_CHANGED" --arg python "$PYTHON_CHANGED" '[if $rust == "true" then "ci-rust", "msrv" else empty end, if $python == "true" then "ci-python" else empty end]')
+          echo "checks=$suites" >> "$GITHUB_OUTPUT"
+          echo "web=$WEB_CHANGED" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: ${{ matrix.recipe }}
+    needs: changes
+    if: needs.changes.outputs.checks != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: ${{ fromJSON(needs.changes.outputs.checks) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Only linking the full native editor/test suite needs this extra space.
+      - name: Free disk space
+        if: matrix.recipe == 'ci-rust'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install native editor dependencies
+        if: matrix.recipe != 'ci-python'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libasound2-dev libudev-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev \
+            libxkbcommon-dev
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: '3.12'
+          enable-cache: ${{ matrix.recipe == 'ci-python' }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          cache-dependency-glob: bloq_py/uv.lock
+
+      - name: Install Rust toolchain
+        env:
+          CI_RECIPE: ${{ matrix.recipe }}
+        run: |
+          if [ "$CI_RECIPE" = msrv ]; then
+            ci_toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')
+            rustup toolchain install "$ci_toolchain" --profile minimal
+            echo "RUSTUP_TOOLCHAIN=$ci_toolchain" >> "$GITHUB_ENV"
+          else
+            rustup toolchain install
+          fi
+
+      - name: Install development tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just${{ matrix.recipe == 'ci-rust' && ',cargo-nextest' || '' }}
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bloq-${{ matrix.recipe }}-${{ runner.os }}-v2
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Run checks
+        run: just ${{ matrix.recipe }}
+
+      - name: Upload Python reference
+        if: matrix.recipe == 'ci-python'
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-docs
+          path: target/site/docs/dev
+          if-no-files-found: error
+          retention-days: 1
+
+  web:
+    name: Build Web Editor
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bloq-web-${{ runner.os }}-v2
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install bevy_cli
+        run: cargo binstall --git https://github.com/TheBevyFlock/bevy_cli --version 0.1.0-alpha.2 --locked bevy_cli
+      - name: Build web editor
+        run: bevy build --locked --release --yes -p bloq_editor --bin bloq_editor web --bundle
+      - name: Upload web editor
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-editor
+          path: target/bevy_web/web-release/bloq_editor
+          if-no-files-found: error
+          retention-days: 1
+
+  ci:
+    name: CI
+    needs: [changes, checks, web]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all selected checks to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'

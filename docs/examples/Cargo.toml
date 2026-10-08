@@ -1,0 +1,34 @@
+[package]
+name = "bloq-doc-examples"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bloq = { path = "../../bloq", features = ["vm"] }
+
+[[bin]]
+name = "t-gate"
+path = "rust/t_gate.rs"
+
+[[bin]]
+name = "quickstart"
+path = "rust/quickstart.rs"
+
+[[bin]]
+name = "ir-roundtrip"
+path = "rust/ir_roundtrip.rs"
+
+[[bin]]
+name = "stim-memory"
+path = "rust/stim_memory.rs"
+
+[[bin]]
+name = "thth"
+path = "rust/thth.rs"
+
+[[bin]]
+name = "vm-intro"
+path = "rust/vm_intro.rs"

@@ -1,0 +1,55 @@
+[package]
+name = "bloq_compile"
+version.workspace = true
+description = "Compile the block graph into physical circuits."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+bloq_graph.workspace = true
+bloq_circuit.workspace = true
+bloq_ir.workspace = true
+bloq_utils.workspace = true
+glam.workspace = true
+hotpath.workspace = true
+thiserror.workspace = true
+itertools.workspace = true
+petgraph.workspace = true
+rustc-hash.workspace = true
+smallvec.workspace = true
+web-time.workspace = true
+
+[dev-dependencies]
+# Physical checks live in `bloq_vm`; path-only breaks the reciprocal dev edge
+# when Cargo packages either crate.
+bloq_vm = { path = "../bloq_vm" }
+# Direct path, no version: bloq_compile ⇄ bloq_stim dev-depend on each other,
+# and cargo only strips (cycle-breaks) version-less path dev-deps at publish.
+bloq_stim = { path = "../bloq_stim", features = ["verify"] }
+bloq_test.workspace = true
+# Ad-hoc BlockGraph construction (isolated-factory verification tests).
+bloq_graph = { workspace = true, features = ["verify"] }
+quizx.workspace = true
+criterion.workspace = true
+rstest.workspace = true
+insta.workspace = true
+stim.workspace = true
+
+[[bench]]
+name = "bench"
+harness = false
+
+[[bench]]
+name = "adder_scaling"
+harness = false
+
+[lints]
+workspace = true
+
+[features]
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc"]

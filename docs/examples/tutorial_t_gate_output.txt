@@ -1,0 +1,26 @@
+BLOG 1.0
+
+module main {
+  in q_in: data = 0
+  out q_out: data = 2
+
+  0: Port [0, 0, 0]
+  1: XZX [0, 0, 1]
+  2: Port [0, 0, 2]
+  3: T [1, 0, 0]
+  4: XZX [1, 0, 1]
+  5: XY [1, 0, 2]
+  0 -> +Z
+  1 -> +Z
+  1 -> +X
+  3 -> +Z
+  5 -> -Z
+
+  mzz = measure 1 -> +X
+  resolve 5 if !mzz
+
+}
+
+
+logical Bloch vector: (0.7071067811865477, 0.7071067811865476, 0.0)
+attempt-limited shot discarded: True

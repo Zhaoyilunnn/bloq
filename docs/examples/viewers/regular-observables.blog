@@ -1,0 +1,11 @@
+BLOG 1.0
+
+module main {
+  in past: data = 2
+  out spatial: data = 1
+  0: ZXZ [0, 0, 0]
+  1: Port [1, 0, 0] role=output
+  2: Port [0, 0, -1]
+  0 -> +X
+  2 -> +Z
+}

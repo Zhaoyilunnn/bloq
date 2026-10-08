@@ -1,0 +1,95 @@
+BLOG 1.0
+
+module main {
+  in ccz_2: ccz = 10
+  in ccz_0: ccz = 14
+  in ccz_1: ccz = 15
+  in q: data = 9
+  in i_k: data = 37
+  out qi_k: data = 27
+
+  0: ZXZ [0, 0, 0]
+  1: XXZ [1, 0, 0]
+  2: ZXZ [2, 0, 0]
+  3: ZXZ [3, 0, 0]
+  4: ZXZ [4, 0, 0]
+  5: ZXX [4, 0, 1]
+  6: ZZX [4, 1, 1]
+  7: ZXX [4, 2, 1]
+  8: ZXZ [4, 2, 0]
+  9: Port [5, 2, 0] role=multiplex <q>
+  10: Port [-1, 0, 0] role=input <CCZ_2>
+  11: XZZ [1, 1, 0]
+  12: XZZ [1, 1, 1]
+  13: XZ [1, 1, 2] <fix2_0>
+  14: Port [-1, 2, 0] role=input <CCZ_0>
+  15: Port [-1, 1, 0] role=input <CCZ_1>
+  16: ZXZ [0, 2, 0]
+  17: ZXZ [1, 2, 0]
+  18: XXZ [2, 2, 0]
+  19: XXZ [3, 2, 0]
+  20: XXZ [3, 1, 0]
+  21: ZXZ [0, 1, 0]
+  22: XZZ [0, 1, 1]
+  23: ZXZ [1, 2, 1]
+  24: XXZ [0, 2, 1]
+  25: XXZ [2, 2, 1]
+  26: ZXZ [3, 2, 1]
+  27: Port [0, 1, 2] <qi_k>
+  28: XXZ [0, 0, 1]
+  29: XXZ [1, 0, 1]
+  30: ZXZ [2, 0, 1]
+  31: XZ [2, 0, 2] <fix2_1>
+  32: XZ [3, 2, 2] <fix1_1>
+  33: XZZ [2, 1, 1]
+  34: XZZ [2, 1, 0]
+  35: XZ [2, 1, 2] <fix1_0>
+  36: ZXZ [4, 1, 0]
+  37: Port [5, 1, 0] role=multiplex <i_k>
+  0 -> +X
+  0 -> -X
+  1 -> +X
+  1 -> +Y
+  2 -> +X
+  3 -> +X
+  4 -> +Z
+  5 -> +Y
+  6 -> +Y
+  7 -> -Z
+  8 -> +X
+  11 -> +Z
+  12 -> +Z
+  14 -> +X
+  15 -> +X
+  16 -> +X
+  17 -> +X
+  18 -> +X
+  18 -> -Y
+  19 -> -Y
+  20 -> +X
+  21 -H> +Z
+  22 -> +Y
+  22 -> +Z
+  22 -> -Y
+  23 -> +X
+  24 -> +X
+  25 -> +X
+  25 -> -Y
+  26 -> +Z
+  28 -> +X
+  29 -> +Y
+  29 -> +X
+  30 -> +Z
+  33 -> -Z
+  33 -> +Z
+  36 -> +X
+
+  m1 = measure 0
+  m2 = measure 16
+  resolve 32 if m1
+  resolve 35 if !m1
+  resolve 13 if !m2
+  resolve 31 if m2
+  feedback X 27 if m1 & m2
+
+}

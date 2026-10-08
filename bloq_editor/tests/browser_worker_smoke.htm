@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- After `bevy build -p bloq_editor --bin bloq_editor web --bundle`,
+     copy this file plus bloq_graph/assets/{cnot,three_cnots}.blog beside the
+     bundled index.html, serve that directory, and open browser_worker_smoke.htm. -->
+<meta charset="utf-8">
+<title>Bloq background worker smoke</title>
+<pre id="status">Running…</pre>
+<script type="module">
+  const status = document.querySelector("#status");
+  async function runWorker(request, { cancelAtStage = false } = {}) {
+    const worker = new Worker("./compile_worker.js", { type: "module" });
+    let ticks = 0;
+    let started = false;
+    let stages = [];
+    const timer = setInterval(() => { if (started) ticks++; }, 10);
+    try {
+      return await new Promise((resolve, reject) => {
+        worker.onerror = (event) => reject(new Error(event.message));
+        worker.onmessageerror = () => reject(new Error("Unreadable worker message"));
+        worker.onmessage = ({ data }) => {
+          if (data.kind === "ready") {
+            started = true;
+            worker.postMessage(request);
+          } else if (data.kind === "stage") {
+            stages.push(data.name);
+            if (cancelAtStage) {
+              worker.onmessage = null;
+              worker.terminate();
+              resolve();
+            }
+          } else if (data.kind === "complete") {
+            if (cancelAtStage) reject(new Error("ZX cancellation did not reach its work stage"));
+            else resolve({ ...data, stages, ticks });
+          } else if (data.kind === "error") {
+            reject(new Error(data.message));
+          } else {
+            reject(new Error(`Unknown worker message: ${data.kind}`));
+          }
+        };
+      });
+    } finally {
+      clearInterval(timer);
+      worker.terminate();
+    }
+  }
+
+  const compile = (source, codeDistance) => runWorker({
+    source, codeDistance, prepareTWithMpps: false,
+  });
+  const zxRequest = (blog, inputs = [], seed = "18446744073709551615") => ({
+    operation: "simplify-zx", source: JSON.stringify({ blog, inputs, false_arms: [] }), seed,
+  });
+
+  try {
+    const cnot = await (await fetch("./cnot.blog")).text();
+    const threeCnots = await (await fetch("./three_cnots.blog")).text();
+    const graph = "BLOG 1.0\n0: ZXZ [0,0,0]\nm = measure 0\n";
+    const graphResult = await compile(graph, 3);
+    if (!(graphResult.bytes instanceof Uint8Array) || graphResult.bytes.length === 0) {
+      throw new Error("Graph compile lacked bytes");
+    }
+    const small = await compile(cnot, 3);
+    if (!(small.bytes instanceof Uint8Array) || small.bytes.length === 0 || small.stages.length === 0) {
+      throw new Error("Valid compile lacked bytes or progress stages");
+    }
+    const hierarchy = cnot.replace("module main", "module Gate") + `
+module main {
+  in control_in: data = 0
+  out control_out: data = 1
+  in target_in: data = 2
+  out target_out: data = 3
+  gate: Gate @ [0, 0, 0]
+  0: Port [0, 0, 0] role=input
+  1: Port [0, 0, 3] role=output
+  2: Port [1, 1, 0] role=input
+  3: Port [1, 1, 3] role=output
+  0 -> gate.control_in
+  gate.control_out -> 1
+  2 -> gate.target_in
+  gate.target_out -> 3
+}
+`;
+    const composed = await compile(hierarchy, 3);
+    if (!(composed.bytes instanceof Uint8Array) || composed.bytes.length === 0) {
+      throw new Error("Hierarchical graph compile lacked bytes");
+    }
+    let rejected = false;
+    try { await compile("invalid BLOG", 3); } catch { rejected = true; }
+    if (!rejected) throw new Error("Invalid source was accepted");
+    const large = await compile(threeCnots, 7);
+    if (large.ticks < 1) throw new Error("Main-thread timer did not tick during compilation");
+    const externalFeedback = "BLOG 1.0\n0: Port [0,0,0]\n1: ZXZ [0,0,1]\n2: Port [0,0,2]\n0 -> +Z\n1 -> +Z\nfeedback X 1 if enabled\n";
+    const request = zxRequest(externalFeedback, ["enabled"]);
+    const [zx, independentCompile] = await Promise.all([
+      runWorker(request), compile(cnot, 3),
+    ]);
+    const prepared = JSON.parse(zx.graphJson);
+    if (typeof prepared.graph !== "string" || !Array.isArray(prepared.vertices) || !Array.isArray(prepared.edges)) {
+      throw new Error("ZX worker did not return its prepared graph and geometry");
+    }
+    if (!independentCompile.bytes.length) throw new Error("ZX worker disrupted compilation");
+    await runWorker(request, { cancelAtStage: true });
+    const restarted = await runWorker(request);
+    if (!restarted.graphJson) throw new Error("ZX worker did not restart after cancellation");
+    status.textContent = `PASS: graph ${graphResult.bytes.length} bytes; named graph ${small.bytes.length} bytes; hierarchy ${composed.bytes.length} bytes; ${small.stages.length} stages; larger compile ${large.ticks} UI timer ticks; external-input ZX/max-u64 seed, independent compile, cancellation and restart`;
+  } catch (error) {
+    status.textContent = `FAIL: ${error.stack || error}`;
+    throw error;
+  }
+</script>

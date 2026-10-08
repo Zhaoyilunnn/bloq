@@ -1,0 +1,86 @@
+BLOG 1.0
+
+module main {
+  in q0: data = 5
+  in q1: data = 17
+  out q2: data = 36
+
+  0: T [0, 0, 0]
+  1: XZX [0, 0, 1]
+  2: ZZX [1, 0, 1]
+  3: XZX [2, 0, 1]
+  4: XZX [2, 0, 2]
+  5: Port [3, 0, 1] role=multiplex <x>
+  8: ZZX [1, 0, 2]
+  9: ZZX [1, 1, 2]
+  10: XY [0, 0, 2]
+  11: XZX [2, 1, 2]
+  12: ZZX [1, 1, 1]
+  13: ZZX [1, 2, 1]
+  14: XZX [2, 2, 1]
+  15: XZX [2, 1, 1]
+  16: T [2, 1, 0]
+  17: Port [3, 2, 1] role=multiplex <y>
+  20: XZX [2, 1, 3]
+  21: XZZ [2, 2, 2]
+  22: XZX [0, 1, 2]
+  23: T [0, 1, 1]
+  24: XY [0, 1, 3]
+  25: XZX [2, 2, 3]
+  26: ZZX [1, 1, 3]
+  27: ZZX [1, 2, 3]
+  28: XZX [0, 2, 3]
+  29: T [0, 2, 2]
+  30: XY [0, 2, 4]
+  31: ZXX [2, 1, 4]
+  32: ZZX [2, 0, 4]
+  33: XZX [1, 0, 4]
+  34: XZX [1, 0, 3]
+  35: XZX [2, 0, 3]
+  36: Port [3, 0, 3] role=output <Out_xy>
+  38: XZX [0, 0, 4]
+  39: Y [0, 0, 3]
+  0 -> +Z
+  1 -> +X
+  1 -> +Z
+  2 -> +X
+  2 -> +Y
+  3 -> +Z
+  3 -> +X
+  4 -> -X
+  8 -> +Y
+  9 -> +X
+  9 -> -X
+  11 -> +Z
+  12 -> +Y
+  12 -> +X
+  13 -> +X
+  14 -> +X
+  14 -> +Z
+  15 -> +Z
+  15 -> -Z
+  20 -> -X
+  20 -H> +Z
+  21 -> +Z
+  22 -> -Z
+  22 -> +Z
+  25 -> -X
+  27 -> -Y
+  27 -> -X
+  28 -> -Z
+  28 -> +Z
+  31 -> -Y
+  32 -> -X
+  33 -> -Z
+  33 -> -X
+  34 -> +X
+  35 -> +X
+  38 -> -Z
+
+  MZxZyZxyZa = measure 1 -> +X
+  resolve 10 if !MZxZyZxyZa
+  MZxZxyZb = measure 22 -> +X
+  resolve 24 if MZxZxyZb
+  MZyZxyZc = measure 28 -> +X
+  resolve 30 if MZyZxyZc
+}

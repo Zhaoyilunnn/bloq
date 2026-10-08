@@ -1,0 +1,11 @@
+BLOG 1.0
+
+  0: ZZX [0, 0, 0]
+  1: Port [1, 0, 0] role=output
+  2: Port [-1, 0, 0] role=output
+  3: Port [0, 1, 0] role=output
+  4: Port [0, -1, 0] role=output
+  [0, 0, 0] -> +X
+  [0, 0, 0] -> -X
+  [0, 0, 0] -> +Y
+  [0, 0, 0] -> -Y

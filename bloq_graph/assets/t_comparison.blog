@@ -1,0 +1,18 @@
+BLOG 1.0
+
+module main {
+0: T [0, 0, 0]
+1: T [1, 0, 0]
+2: XZX [0, 0, 1]
+3: XZX [1, 0, 1]
+4: YX [1, 0, 2]
+[0, 0, 0] -> +Z
+[1, 0, 0] -> +Z
+[0, 0, 1] -> +X
+[1, 0, 1] -> +Z
+
+cmp = measure [0, 0, 1] -> +X
+resolve [1, 0, 2] if !cmp
+parity = measure [1, 0, 2]
+discard if parity
+}

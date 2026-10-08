@@ -1,0 +1,45 @@
+name: Security Audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - '.github/workflows/security-audit.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - '.github/workflows/security-audit.yml'
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,just
+      - name: Run audit
+        run: just audit

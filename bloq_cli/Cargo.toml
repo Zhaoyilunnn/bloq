@@ -1,0 +1,47 @@
+[package]
+name = "bloq-cli"
+version.workspace = true
+description = "Block graph compiler for fault-tolerant quantum circuits: command-line interface."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lib]
+name = "bloq_cli"
+
+[[bin]]
+name = "bloq"
+path = "src/main.rs"
+doc = false
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/bloq-{ target }{ archive-suffix }"
+
+[features]
+# Opt-in profiling for the CLI and the compiler pipeline it drives.
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc"]
+
+[dependencies]
+bloq_compile.workspace = true
+bloq_graph = { workspace = true, features = ["gltf"] }
+bloq_ir.workspace = true
+bloq_lassynth.workspace = true
+bloq_stim.workspace = true
+bloq_utils.workspace = true
+glam.workspace = true
+hotpath.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+color-eyre.workspace = true
+indicatif.workspace = true
+same-file.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

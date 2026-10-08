@@ -1,0 +1,198 @@
+{
+  "purpose": "Retained paper and experiment assets, including derived 2D companions and compiled circuit bundles. Block graphs are exported interactively from the current source; regenerated execution illustrations record compiler, renderer, and trace hashes.",
+  "files": [
+    {
+      "file": "assets/experiments/ccz-circuits.zip",
+      "source": "https://github.com/inmzhang/bloq/tree/9e45a6e113f47f41af8c4560360c7cdaebaf6605",
+      "sha256": "3f123f70314189c8fb8e9860a8ad1ba9c3996bd6d6a77d11392938582250fa0e",
+      "derivation": "Conventional and TELS circuits at distance 9, physical noise 0.001, and ten memory rounds before each adaptive choice. Regenerated with the recorded compiler; both manifest hashes match the retained simulation results. Includes all sixteen paths and decoder circuits per layout. The script reconstructs detector error models from the decoder circuits."
+    },
+    {
+      "file": "assets/experiments/t-gate-characterization-d9.zip",
+      "source": "Retained T-gate characterization circuit bundle at distance 9",
+      "sha256": "0a78b01d4aba4dc62eb25a37a0c14fad7540cd1941b5df1e80a62e57a561a623",
+      "derivation": "ZIP archive of the fourteen retained distance-9 physical/proxy input-state and Choi circuit sets. Original manifest and circuit bytes are preserved.",
+      "source_revision": "61ebd6698814d8d3e2125709b30afd9e22a4f8b0"
+    },
+    {
+      "file": "assets/paper/preliminary-flows.png",
+      "source": "Research figure source: preliminary-flows.png",
+      "sha256": "65af37d8ddaf73a6000dbec2f072bdd88530c9bdb99ef62dae2fec23a1c0a9d1"
+    },
+    {
+      "file": "assets/paper/preliminary-patch.png",
+      "source": "Research figure source: preliminary-patch.png",
+      "sha256": "01c3b9507b0be2fe147906b2b1decf235d7821dac213fa6b119e47d1075572f9"
+    },
+    {
+      "file": "assets/paper/preliminary-surgery.png",
+      "source": "Research figure source: preliminary-surgery.png",
+      "sha256": "495d7429cc715db27f5e2cdab3471db65f796de2f0e7e73c10cbb6fffed442bf"
+    },
+    {
+      "file": "assets/paper/preliminary-cnot.png",
+      "source": "Research figure source: preliminary-cnot.png",
+      "sha256": "c10a7fb85fac37586b70031504664f26091eb5d9e1a0fa14083a3a3b680c0fa9"
+    },
+    {
+      "file": "assets/paper/walking-patches.png",
+      "source": "Research figure source: walking-patches.png",
+      "sha256": "ecfaa193a5659f359e65f5935c509c52f1373ebe9153737eacd7598439df9aaa"
+    },
+    {
+      "file": "assets/paper/y-block-patches.png",
+      "source": "Research figure source: y-block-patches.png",
+      "sha256": "80aab532e572297adabd9875e50d8ceb439d3cd99ba78123ebba9cdd9f6c4c47"
+    },
+    {
+      "file": "assets/paper/t-block.png",
+      "source": "Research figure source: t-block.png",
+      "sha256": "90ad0ab25f71d97048473ce5590d537a1db0f7c045a3a3505d93fd5aa95f7f04"
+    },
+    {
+      "file": "assets/paper/temporal-hadamard-realignment.svg",
+      "source": "Research figure source: data/temporal-hadamard-realignment.svg",
+      "sha256": "b362352dcc6ee4a5ff41a4dfdba4c25f9c61fd4f8891b38e268acb3adbab801b"
+    },
+    {
+      "file": "assets/experiments/thth-occupation.svg",
+      "source": "Experiment generator: thth_occupation.py",
+      "sha256": "173b55102437adb2607480fa0e60f8206ef37a6271d92016d3e858b1de6574b4",
+      "generation": "Current Bloq IR execution with the settings recorded in thth-occupation.caption.md",
+      "provenance": {
+        "bloq_commit": "74216bf3d59ab9fbb5686719d43d937247beb564+working-tree",
+        "bloq_version": "0.1.0",
+        "source_sha256": "74911df3bdfa172c130ceb5aecbe83bf0af889549c911e9fe5cc88275f09476a",
+        "generator_sha256": "1e663f7030a1341565ee537f23c810a97dac7788e841840060b2da06d54026c5"
+      },
+      "trace_sha256": "85fa7ad24567e766516ee709597951036dd6bf035271e450a2598ad2af2c250a"
+    },
+    {
+      "file": "assets/experiments/thth-occupation.csv",
+      "source": "Experiment generator: thth_occupation.py",
+      "sha256": "e131455158c5a7ba17ac4ec12f839d90c5cd121cb2955f854d726a4f012cd80b",
+      "generation": "Current Bloq IR execution with the settings recorded in thth-occupation.caption.md",
+      "provenance": {
+        "bloq_commit": "74216bf3d59ab9fbb5686719d43d937247beb564+working-tree",
+        "bloq_version": "0.1.0",
+        "source_sha256": "74911df3bdfa172c130ceb5aecbe83bf0af889549c911e9fe5cc88275f09476a",
+        "generator_sha256": "1e663f7030a1341565ee537f23c810a97dac7788e841840060b2da06d54026c5"
+      },
+      "trace_sha256": "85fa7ad24567e766516ee709597951036dd6bf035271e450a2598ad2af2c250a"
+    },
+    {
+      "file": "assets/experiments/thth-occupation.caption.md",
+      "source": "Experiment generator: thth_occupation.py",
+      "sha256": "98dd948414ffc5c702610641b3086099dfc3085454d045e5df4dcd23c58da5d8",
+      "generation": "Current Bloq IR execution with the settings recorded in thth-occupation.caption.md",
+      "provenance": {
+        "bloq_commit": "74216bf3d59ab9fbb5686719d43d937247beb564+working-tree",
+        "bloq_version": "0.1.0",
+        "source_sha256": "74911df3bdfa172c130ceb5aecbe83bf0af889549c911e9fe5cc88275f09476a",
+        "generator_sha256": "1e663f7030a1341565ee537f23c810a97dac7788e841840060b2da06d54026c5"
+      },
+      "trace_sha256": "85fa7ad24567e766516ee709597951036dd6bf035271e450a2598ad2af2c250a"
+    },
+    {
+      "file": "assets/paper/preliminary-cnot-physical.svg",
+      "source": "Research figure source: preliminary-cnot.typ",
+      "source_sha256": "943b8b062c10a2764b9370cd18b1c0647af31623e633aaf34c6e965eb23b3717",
+      "sha256": "b2df8dcc7be17a06739898ea0f563a880b6ea27345df112e261d197095359aa4",
+      "derivation": "2D panels retained; 3D screenshots replaced by documentation viewers"
+    },
+    {
+      "file": "assets/paper/regular-cube-observables-physical.svg",
+      "source": "Research figure source: regular-cube-observables.typ",
+      "source_sha256": "1fe4c73d3bbf901a147a436c7b6dd8fec5c06969183afd9a9d5a6b673d3675b8",
+      "sha256": "c1a77c0e86009fbeb5c0af2ef928f68949d9480996dc04c99a03529c4e386d61",
+      "derivation": "2D panels retained; 3D screenshots replaced by documentation viewers"
+    },
+    {
+      "file": "assets/paper/spatial-cube-patches-physical.svg",
+      "source": "Research figure source: spatial-cube-patches.typ",
+      "source_sha256": "37bfa806b1b4c929abdcdb17157fab1ff034f62428dabfc6bbd4181988a69cc8",
+      "sha256": "26b6e0fc914afb7cfecd6865846cafacf4fb631d6d9cea65670799267a925b39",
+      "derivation": "2D panels retained; 3D screenshots replaced by documentation viewers"
+    },
+    {
+      "file": "assets/paper/patch-rotation-physical.svg",
+      "source": "Research figure source: patch-rotation.typ",
+      "source_sha256": "3e66214cdb78ce7ea4e0e5907e60045cf5d4c6bdf5ae55c6cf8c9d10bf9b3429",
+      "sha256": "3f3a6602a4331c4f798237a11f63fb68934a648516f8935e7056dbdea8265c9d",
+      "derivation": "2D panels retained; 3D screenshots replaced by documentation viewers"
+    },
+    {
+      "file": "assets/paper/zx-spiders.svg",
+      "source": "Research figure source: preliminary-zx-junctions.tex",
+      "source_sha256": "6693c283b5ecb1d8d643c36bb1c4c6570a5f78daadc2128f700258e3347712c3",
+      "sha256": "c49bed0d7daad474ce6aa9faccdd7bd3fb98ad19996094c6452508595adb214e",
+      "derivation": "2D ZX connectivity and Pauli-web rules, with basis indicated by spider color",
+      "generator": "tools/render_viewer_companions.py"
+    },
+    {
+      "file": "assets/paper/zx-cnot-web.svg",
+      "source": "Research figure source: data/zx-cnot-reduced.tikz",
+      "source_sha256": "78087801a2f992821df6fa83baf55f550f03e5c64e9d8cd726a88a7f25369293",
+      "sha256": "55222519c3dea40711851edc03e6c9b5667e7ef4205ab5492eef034bde1a6a39",
+      "derivation": "2D ZX connectivity and Pauli-web rules, with basis indicated by spider color",
+      "generator": "tools/render_viewer_companions.py"
+    },
+    {
+      "file": "assets/paper/zx-cnot-correspondence.svg",
+      "source": "Research figure source: data/zx-cnot-map.json",
+      "source_sha256": "7ca9c9350011506cd0e289233d7dbc5f71037108b455f1be7cb199c0992c5fd8",
+      "sha256": "5fe6891d4acbcc7f54b450125e07047c5b486de4bfa5029bc62b8c298aa79b87",
+      "derivation": "2D ZX connectivity and Pauli-web rules, with basis indicated by spider color",
+      "generator": "tools/render_viewer_companions.py"
+    },
+    {
+      "file": "assets/paper/zx-spider-rules.svg",
+      "source": "Research figure source: preliminary-zx-relations.tex",
+      "source_sha256": "1d7ee38d2a442020b6c7022f783e97421188a9a59f282f6a3e91b95665197ce4",
+      "sha256": "31d49d4e086216ad489efcae5c0eafd73c96bc76d9e5789357d64d5da3d01559",
+      "derivation": "2D ZX connectivity and Pauli-web rules, with basis indicated by spider color",
+      "generator": "tools/render_viewer_companions.py"
+    },
+    {
+      "file": "assets/paper/zx-web-composition.svg",
+      "source": "Research figure source: preliminary-zx-relations.tex",
+      "source_sha256": "1d7ee38d2a442020b6c7022f783e97421188a9a59f282f6a3e91b95665197ce4",
+      "sha256": "e115f0746ea68d0ea2ffa524bb49b2daba5c2af08e19151b5d2fcd0a704554ea",
+      "derivation": "2D ZX connectivity and Pauli-web rules, with basis indicated by spider color",
+      "generator": "tools/render_viewer_companions.py"
+    },
+    {
+      "file": "assets/paper/patch-alignment-conventions.svg",
+      "source": "Research figure source: patch-alignment-conventions.typ",
+      "source_sha256": "6d57103ca4ad172250b88bef8e11fe023f5ca726556673b47dd865e4df7844a8",
+      "sha256": "47ce1614217c8306c968990d3143cb493ace935e585f94117e5fdd903326d469",
+      "derivation": "Unmodified three-panel paper figure exported to SVG with Typst; comparison drawings use a translated, vertically reflected coordinate frame",
+      "inputs": [
+        {
+          "file": "lib.typ",
+          "sha256": "2febe54027c44e8b6d82aa52ed49fdde537c93d043b354532257078605e1fe91"
+        },
+        {
+          "file": "data/patch_conv_d5_bulk_x.json",
+          "sha256": "74fe084329776ab985a1bd384fe0fe549e88ed08794c054e328c9b6febade112"
+        },
+        {
+          "file": "data/patch_conv_d5_boundary_x.json",
+          "sha256": "9a3b098f3379a70e12f2c4b8bc641e5a0b09d3ab6b1f8f097d9972910c1f0cca"
+        },
+        {
+          "file": "data/patch_conv_d5_bulk_z.json",
+          "sha256": "ab70cbb235de977b8f48a28bce67d692c6795098d8bb6930ecd462f80e46e7b6"
+        }
+      ]
+    },
+    {
+      "file": "assets/experiments/t-gate-characterization.svg",
+      "source": "Retained T-gate characterization summary (CSV)",
+      "source_sha256": "9cb6e8d4d751fc5c001a6f8061b200aecf335f3691b3c112eda9d5b5e9b2e66b",
+      "sha256": "61136accb908173ed1401150363f38b4eea5352b1b3103d972131d6938f64629",
+      "derivation": "Six input-state infidelities and independent Choi estimates replotted with nominal 95% half-widths by tools/plot_tutorial_results.py. The six-state mean uses equal weights. No new sampling.",
+      "source_revision": "61ebd6698814d8d3e2125709b30afd9e22a4f8b0"
+    }
+  ]
+}

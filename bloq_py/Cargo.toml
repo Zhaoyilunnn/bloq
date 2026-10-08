@@ -1,0 +1,42 @@
+[package]
+name = "bloq_py"
+version.workspace = true
+description = "Python bindings for the Bloq lattice-surgery compiler and VM."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "bloq_py"
+# The extension uses cdylib; stub_gen links the rlib.
+crate-type = ["cdylib", "rlib"]
+# Rustdoc supplies Python docstrings; pytest runs their examples.
+# Explicit `cargo test --doc` still collects Markdown code blocks. After a
+# blank doc line, keep `>>>` examples unindented to avoid Rust doctest collection.
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Reuse the full Rust CLI inside the extension. Wheels need no separate executable.
+bloq_cli.workspace = true
+bloq_circuit.workspace = true
+bloq_compile.workspace = true
+bloq_graph = { workspace = true, features = ["gltf"] }
+bloq_ir.workspace = true
+# Flow verification stays Rust-only; Python can use the PyPI stim package.
+bloq_stim.workspace = true
+bloq_utils.workspace = true
+bloq_vm.workspace = true
+glam.workspace = true
+# Maturin enables extension-module; standalone stub_gen must link libpython.
+pyo3 = { version = "0.29.2", features = ["abi3-py310"] }
+# Bound types need none of the optional NumPy/either/ordered-float features.
+pyo3-stub-gen = { version = "0.23.0", default-features = false, features = ["infer_signature"] }
+rand.workspace = true
+rustc-hash.workspace = true
+stim.workspace = true

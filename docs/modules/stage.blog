@@ -1,0 +1,12 @@
+BLOG 1.0
+
+module main {
+  in q_in: data = 0
+  out q_out: data = 2
+
+  0: Port [0, 0, -1] role=input <q_in>
+  1: ZXZ [0, 0, 0]
+  2: Port [0, 0, 1] role=output <q_out>
+  0 -> +Z
+  1 -> +Z
+}

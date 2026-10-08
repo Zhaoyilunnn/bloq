@@ -1,0 +1,20 @@
+BLOG 1.0
+
+module main {
+in a_in: data = 0
+out a_out: data = 2
+in b_in: data = 3
+out b_out: data = 5
+
+0: Port [0, 0, 0] <In_1>
+1: XZX [0, 0, 1]
+2: Port [0, 0, 2] <Out_1>
+3: Port [1, -1, 1] role=input <In_2>
+4: XXZ [1, 0, 1]
+5: Port [1, 1, 1] role=output <Out_2>
+[0, 0, 0] -> +Z
+[0, 0, 1] -> +Z
+[0, 0, 1] -H> +X
+[1, 0, 1] -> -Y
+[1, 0, 1] -> +Y
+}

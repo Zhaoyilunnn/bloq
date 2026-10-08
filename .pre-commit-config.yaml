@@ -1,0 +1,59 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-toml
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: local
+    hooks:
+      - id: fmt
+        name: fmt
+        description: Format files with cargo fmt.
+        entry: just fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-check
+        name: check
+        description: Check the package for errors.
+        entry: just check
+        language: system
+        files: '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|justfile|.*\.rs)$'
+        pass_filenames: false
+
+      - id: clippy
+        name: clippy
+        description: Lint rust sources
+        entry: just lint
+        language: system
+        files: '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|justfile|clippy\.toml|.*\.rs)$'
+        pass_filenames: false
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.50.3
+    hooks:
+      - id: typos
+        args: [--force-exclude]
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: []
+
+  - repo: https://github.com/bnjbvr/cargo-machete
+    rev: v0.9.2
+    hooks:
+      - id: cargo-machete

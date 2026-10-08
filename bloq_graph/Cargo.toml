@@ -1,0 +1,41 @@
+[package]
+name = "bloq_graph"
+version.workspace = true
+description = "Graph representation of fault-tolerant surface code quantum computing."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+strum.workspace = true
+thiserror.workspace = true
+glam.workspace = true
+petgraph.workspace = true
+gltf-json = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bloq_utils.workspace = true
+chumsky.workspace = true
+ariadne.workspace = true
+rand.workspace = true
+rustc-hash.workspace = true
+smallvec.workspace = true
+quizx = { workspace = true, optional = true }
+
+[dev-dependencies]
+bloq_test = { path = "../bloq_test" }
+
+[features]
+# Non-default: glTF export for 3D visualization. Pulls in gltf-json and base64.
+gltf = ["dep:gltf-json", "dep:base64"]
+# Non-default: graph-level verification by exact QuiZX contraction.
+verify = ["dep:quizx"]
+
+[[test]]
+name = "verify_gallery"
+required-features = ["verify"]
+
+[lints]
+workspace = true

@@ -1,0 +1,2424 @@
+BLOG 1.0
+
+module InjectedAnd {
+  in ccz_2: ccz = 10
+  in ccz_0: ccz = 14
+  in ccz_1: ccz = 15
+  in q: data = 9
+  in i_k: data = 37
+  out qi_k: data = 27
+
+  0: ZXZ [0, 0, 0]
+  1: XXZ [1, 0, 0]
+  2: ZXZ [2, 0, 0]
+  3: ZXZ [3, 0, 0]
+  4: ZXZ [4, 0, 0]
+  5: ZXX [4, 0, 1]
+  6: ZZX [4, 1, 1]
+  7: ZXX [4, 2, 1]
+  8: ZXZ [4, 2, 0]
+  9: Port [5, 2, 0] role=multiplex <q>
+  10: Port [-1, 0, 0] role=input <CCZ_2>
+  11: XZZ [1, 1, 0]
+  12: XZZ [1, 1, 1]
+  13: XZ [1, 1, 2] <fix2_0>
+  14: Port [-1, 2, 0] role=input <CCZ_0>
+  15: Port [-1, 1, 0] role=input <CCZ_1>
+  16: ZXZ [0, 2, 0]
+  17: ZXZ [1, 2, 0]
+  18: XXZ [2, 2, 0]
+  19: XXZ [3, 2, 0]
+  20: XXZ [3, 1, 0]
+  21: ZXZ [0, 1, 0]
+  22: XZZ [0, 1, 1]
+  23: ZXZ [1, 2, 1]
+  24: XXZ [0, 2, 1]
+  25: XXZ [2, 2, 1]
+  26: ZXZ [3, 2, 1]
+  27: Port [0, 1, 2] <qi_k>
+  28: XXZ [0, 0, 1]
+  29: XXZ [1, 0, 1]
+  30: ZXZ [2, 0, 1]
+  31: XZ [2, 0, 2] <fix2_1>
+  32: XZ [3, 2, 2] <fix1_1>
+  33: XZZ [2, 1, 1]
+  34: XZZ [2, 1, 0]
+  35: XZ [2, 1, 2] <fix1_0>
+  36: ZXZ [4, 1, 0]
+  37: Port [5, 1, 0] role=multiplex <i_k>
+  0 -> +X
+  0 -> -X
+  1 -> +X
+  1 -> +Y
+  2 -> +X
+  3 -> +X
+  4 -> +Z
+  5 -> +Y
+  6 -> +Y
+  7 -> -Z
+  8 -> +X
+  11 -> +Z
+  12 -> +Z
+  14 -> +X
+  15 -> +X
+  16 -> +X
+  17 -> +X
+  18 -> +X
+  18 -> -Y
+  19 -> -Y
+  20 -> +X
+  21 -H> +Z
+  22 -> +Y
+  22 -> +Z
+  22 -> -Y
+  23 -> +X
+  24 -> +X
+  25 -> +X
+  25 -> -Y
+  26 -> +Z
+  28 -> +X
+  29 -> +Y
+  29 -> +X
+  30 -> +Z
+  33 -> -Z
+  33 -> +Z
+  36 -> +X
+
+  m1 = measure 0
+  m2 = measure 16
+  resolve 32 if m1
+  resolve 35 if !m1
+  resolve 13 if !m2
+  resolve 31 if m2
+  feedback X 27 if m1 & m2
+
+}
+
+module BulkMaj {
+  in ccz_1: ccz = 0
+  in ccz_3: ccz = 1
+  in ccz_2: ccz = 2
+  in i_prime_k: data = 6
+  in c_k: data = 35
+  in t_k: data = 81
+  out c_k_plus_1: data = 50
+  out c_k_out: data = 56
+  out c_k_plus_1_duplicate: data = 67
+  out c_k_xor_i_prime_k: data = 70
+  out c_k_xor_t_k: data = 80
+
+  0: Port [-1, 0, 2] role=input <CCZ_1>
+  1: Port [-1, 1, 2] role=input <CCZ_3>
+  2: Port [-1, 2, 2] role=input <CCZ_2>
+  3: XXZ [0, 0, 0]
+  4: XZZ [0, 0, 1]
+  5: XZX [0, 0, 2]
+  6: Port [0, 1, -1] role=input <i_prime_k>
+  7: XZZ [0, 1, 0]
+  8: XXZ [0, 1, 1]
+  9: XZX [0, 1, 2]
+  10: ZZX [0, 1, 3]
+  11: XZX [0, 1, 4]
+  12: XZ [0, 1, 5]
+  13: XZZ [0, 2, 0]
+  14: XZZ [0, 2, 1]
+  15: XZX [0, 2, 2]
+  16: ZXX [0, 2, 3]
+  17: ZXZ [0, 2, 4]
+  18: XZ [0, 2, 5]
+  19: XXZ [1, 0, 0]
+  20: XXZ [1, 0, 1]
+  21: XZX [1, 0, 2]
+  22: XZX [1, 0, 3]
+  23: ZXX [1, 0, 4]
+  24: XZ [1, 0, 5]
+  25: XXZ [1, 1, 0]
+  26: XXZ [1, 1, 1]
+  27: XZX [1, 1, 2]
+  28: ZZX [1, 1, 3]
+  29: ZZX [1, 1, 4]
+  30: XZX [1, 2, 1]
+  31: XZX [1, 2, 2]
+  32: ZXX [1, 2, 3]
+  33: ZXZ [1, 2, 4]
+  34: XZ [1, 2, 5]
+  35: Port [2, -1, 0] role=input <c_k>
+  36: XXZ [2, 0, 0]
+  37: ZXZ [2, 0, 1]
+  38: ZXZ [2, 0, 2]
+  39: ZXZ [2, 0, 3]
+  40: ZXZ [2, 1, 0]
+  41: ZXZ [2, 1, 1]
+  42: XZX [2, 1, 2]
+  43: XZX [2, 1, 3]
+  44: XZX [2, 1, 4]
+  45: XXZ [2, 2, 0]
+  46: XZX [2, 2, 1]
+  47: ZXZ [2, 2, 2]
+  48: ZXZ [2, 2, 3]
+  49: ZXZ [2, 2, 4]
+  50: Port [2, 3, 0] role=output <c_k_plus_1>
+  51: ZXZ [3, 0, 0]
+  52: ZXX [3, 0, 1]
+  53: ZXX [3, 0, 2]
+  54: ZXZ [3, 0, 3]
+  55: ZXX [3, 0, 4]
+  56: Port [3, 0, 5] role=output <c_k_out>
+  57: XXZ [3, 1, 0]
+  58: ZZX [3, 1, 1]
+  59: ZXX [3, 1, 2]
+  60: ZXX [3, 1, 3]
+  61: ZXX [3, 1, 4]
+  62: XXZ [3, 2, 0]
+  63: ZZX [3, 2, 1]
+  64: ZXZ [3, 2, 2]
+  65: ZZX [3, 2, 3]
+  66: ZXZ [3, 2, 4]
+  67: Port [3, 2, 5] role=output <c_k_plus_1_duplicate>
+  68: ZXZ [4, 0, 3]
+  69: ZXZ [4, 0, 4]
+  70: Port [4, 0, 5] role=output <c_k_xor_i_prime_k>
+  71: XZX [4, 1, 1]
+  72: XZZ [4, 1, 2]
+  73: XZX [4, 1, 3]
+  74: XZZ [4, 1, 4]
+  75: ZXZ [4, 2, 0]
+  76: ZXZ [4, 2, 1]
+  77: ZXZ [4, 2, 2]
+  78: XZX [4, 2, 3]
+  79: XZZ [4, 2, 4]
+  80: Port [4, 2, 5] role=output <c_k_xor_t_k>
+  81: Port [5, 1, 3] role=input <t_k>
+  0 -> +X
+  1 -> +X
+  2 -> +X
+  3 -> +Y
+  3 -> +X
+  4 -> +Z
+  4 -> +Y
+  5 -> +X
+  6 -> +Z
+  7 -> +Y
+  8 -> +Y
+  8 -> +X
+  9 -> +X
+  10 -> +Y
+  10 -> +X
+  11 -> +Z
+  11 -> +X
+  13 -> +Z
+  15 -> +X
+  16 -> +Z
+  17 -> +Z
+  19 -> +Y
+  19 -> +X
+  20 -> +Y
+  20 -> +X
+  21 -> +Z
+  22 -H> +Z
+  23 -> +Z
+  23 -> +Y
+  25 -> +X
+  27 -> +X
+  28 -> +Y
+  28 -> +X
+  29 -> +X
+  30 -> +Z
+  30 -> +X
+  31 -H> +Z
+  32 -> +Z
+  33 -> +Z
+  35 -> +Y
+  36 -> +X
+  37 -> +Z
+  38 -> +Z
+  39 -> +X
+  40 -> +Z
+  40 -> +X
+  41 -H> +Z
+  42 -> +Z
+  43 -> +Z
+  45 -> +Y
+  45 -> +X
+  46 -> +X
+  47 -> +Z
+  47 -> +X
+  48 -> +Z
+  49 -> +X
+  51 -> +Z
+  52 -> +Z
+  52 -> +Y
+  53 -> +Y
+  54 -> +X
+  55 -> +Z
+  55 -> +Y
+  57 -> +Y
+  58 -> +Y
+  58 -> +X
+  59 -> +Z
+  60 -> +Z
+  60 -> +Y
+  62 -> +X
+  64 -> +X
+  65 -> +X
+  66 -> +Z
+  68 -> +Z
+  69 -> +Z
+  71 -> +Z
+  72 -> +Z
+  73 -> +Z
+  73 -> +X
+  74 -> +Y
+  75 -> +Z
+  76 -> +Z
+  78 -> +Z
+  79 -> +Z
+
+  mt1 = measure 0 -> +X
+  mt2 = measure 2 -> +X
+  resolve 18 if !mt1
+  resolve 34 if mt1
+  resolve 12 if !mt2
+  resolve 24 if mt2
+  feedback X 50, X 67 if mt1 & mt2
+
+}
+
+module HeadMaj {
+  in ccz_1: ccz = 0
+  in ccz_3: ccz = 1
+  in ccz_2: ccz = 2
+  in i_prime_k: data = 8
+  out c_k_plus_1: data = 51
+  out c_k_plus_1_duplicate: data = 65
+  out c_k_xor_i_prime_k: data = 70
+  out c_k_xor_t_k: data = 81
+  in t_k: data = 82
+
+  0: Port [-1, 0, 2] role=input <ccz_1>
+  1: Port [-1, 1, 2] role=input <ccz_3>
+  2: Port [-1, 2, 2] role=input <ccz_2>
+  3: XZZ [0, 0, 0]
+  4: XZX [0, 0, 1]
+  5: XZX [0, 0, 2]
+  6: ZXZ [0, 0, 3]
+  7: ZXX [0, 0, 4]
+  8: Port [0, 1, -1] role=input <i_prime_k>
+  9: XZZ [0, 1, 0]
+  10: XZX [0, 1, 1]
+  11: XZX [0, 1, 2]
+  12: ZZX [0, 1, 3]
+  13: ZXX [0, 1, 4]
+  14: XZ [0, 1, 5] <fix_4a>
+  15: XZX [0, 2, 0]
+  16: XZX [0, 2, 1]
+  17: XZX [0, 2, 2]
+  18: ZXX [0, 2, 3]
+  19: ZXZ [0, 2, 4]
+  20: XZ [0, 2, 5] <fix_3a>
+  21: ZXX [1, 0, 1]
+  22: XZX [1, 0, 2]
+  23: ZXZ [1, 0, 3]
+  24: XZX [1, 0, 4]
+  25: XZ [1, 0, 5] <fix_4b>
+  26: ZZX [1, 1, 0]
+  27: ZZX [1, 1, 1]
+  28: ZZX [1, 1, 2]
+  29: XZX [1, 1, 3]
+  30: XZZ [1, 1, 4]
+  31: ZZX [1, 2, 0]
+  32: ZZX [1, 2, 1]
+  33: ZZX [1, 2, 2]
+  34: XZX [1, 2, 3]
+  35: XZZ [1, 2, 4]
+  36: XZ [1, 2, 5] <fix_3b>
+  37: XZX [2, 0, 1]
+  38: XZZ [2, 0, 2]
+  39: XXZ [2, 0, 3]
+  40: XZX [2, 0, 4]
+  41: XZX [2, 1, 0]
+  42: XZX [2, 1, 1]
+  43: XZZ [2, 1, 2]
+  44: XZZ [2, 1, 3]
+  45: ZZX [2, 1, 4]
+  46: XXZ [2, 2, 0]
+  47: XZX [2, 2, 1]
+  48: XZX [2, 2, 2]
+  49: XZX [2, 2, 3]
+  50: ZXX [2, 2, 4]
+  51: Port [2, 3, 0] role=output <c_k_plus_1>
+  52: XZX [3, 0, 1]
+  53: XZZ [3, 0, 2]
+  54: XZX [3, 0, 3]
+  55: XZX [3, 0, 4]
+  56: XZX [3, 1, 0]
+  57: XZX [3, 1, 1]
+  58: XZZ [3, 1, 2]
+  59: ZZX [3, 1, 4]
+  60: ZXZ [3, 2, 0]
+  61: XZX [3, 2, 1]
+  62: XZZ [3, 2, 2]
+  63: ZXZ [3, 2, 3]
+  64: ZXX [3, 2, 4]
+  65: Port [3, 2, 5] role=output <c_k_plus_1_duplicate>
+  66: XZX [4, 0, 1]
+  67: ZXZ [4, 0, 2]
+  68: ZXZ [4, 0, 3]
+  69: ZXZ [4, 0, 4]
+  70: Port [4, 0, 5] role=output <c_k_xor_i_prime_k>
+  71: XZX [4, 1, 0]
+  72: XZX [4, 1, 1]
+  73: XZX [4, 1, 2]
+  74: XZX [4, 1, 3]
+  75: XZZ [4, 1, 4]
+  76: ZXZ [4, 2, 0]
+  77: ZXZ [4, 2, 1]
+  78: ZXZ [4, 2, 2]
+  79: ZXZ [4, 2, 3]
+  80: XZZ [4, 2, 4]
+  81: Port [4, 2, 5] role=output <c_k_xor_t_k>
+  82: Port [5, 1, 3] role=input <t_k>
+  0 -> +X
+  1 -> +X
+  2 -> +X
+  3 -> +Z
+  3 -> +Y
+  4 -> +Z
+  5 -> +X
+  6 -> +Z
+  6 -> +X
+  7 -> +Y
+  8 -> +Z
+  10 -> +Z
+  10 -> +X
+  11 -> +X
+  12 -> +Y
+  12 -> +X
+  13 -> +Z
+  15 -> +Z
+  15 -> +X
+  16 -> +Z
+  17 -H> +Z
+  18 -> +Z
+  19 -> +Z
+  21 -H> +Z
+  21 -> +Y
+  23 -> +X
+  24 -> +Z
+  24 -> +X
+  26 -> +Y
+  26 -> +X
+  27 -> +Y
+  27 -> +X
+  28 -> +Y
+  29 -> +Z
+  30 -> +Y
+  32 -> +X
+  33 -> +X
+  34 -> +Z
+  34 -> +X
+  35 -> +Z
+  37 -> +Z
+  37 -> +X
+  38 -> +Y
+  39 -> +Y
+  40 -> +X
+  41 -> +X
+  42 -> +Z
+  42 -> +X
+  43 -> +Z
+  45 -> +Y
+  45 -> +X
+  46 -> +Y
+  46 -> +X
+  47 -> +Z
+  47 -> +X
+  48 -> +Z
+  49 -H> +Z
+  52 -> +Z
+  52 -> +X
+  53 -> +Z
+  53 -> +Y
+  54 -> +Z
+  56 -> +X
+  57 -> +Z
+  58 -> +Y
+  59 -> +Y
+  60 -> +X
+  61 -> +Z
+  63 -> +Z
+  63 -> +X
+  64 -> +Z
+  66 -H> +Z
+  67 -> +Z
+  68 -> +Z
+  69 -> +Z
+  71 -> +Z
+  72 -> +Z
+  73 -> +Z
+  74 -> +Z
+  74 -> +X
+  75 -> +Y
+  76 -> +Z
+  77 -> +Z
+  78 -> +Z
+  80 -> +Z
+
+  mt1 = measure 0 -> +X
+  mt2 = measure 2 -> +X
+  resolve 20 if mt1
+  resolve 36 if !mt1
+  resolve 14 if mt2
+  resolve 25 if !mt2
+  feedback X 51, X 65 if mt1 & mt2
+
+}
+
+module BulkUmaParked {
+  in c_k: data = 5
+  in c_k_plus_1: data = 10
+  in c_k_xor_i_prime_k: data = 13
+  in c_k_xor_t_k: data = 18
+  out out_k: data = 21
+  in incoming_z
+  out erase = m_ikprime ^ m_anc
+  out carry_z = m_ikprime ^ m_anc ^ incoming_z
+
+  0: ZZX [-1, 0, 0]
+  1: XXZ [-1, 0, 1]
+  2: ZZX [-1, 1, 0]
+  3: XXZ [-1, 1, 1]
+  4: XXZ [-1, 2, 1]
+  5: Port [0, 0, -1] <c_k>
+  6: XZX [0, 0, 0]
+  7: ZXZ [0, 0, 1]
+  8: XZX [0, 1, 0]
+  9: ZXZ [0, 1, 1]
+  10: Port [0, 2, -1] <c_k+1>
+  11: ZXZ [0, 2, 0]
+  12: ZXZ [0, 2, 1]
+  13: Port [1, 0, -1] <ck_xor_qik>
+  14: ZXX [1, 0, 0]
+  15: ZXZ [1, 0, 1]
+  16: ZZX [1, 1, 0]
+  17: XXZ [1, 1, 1]
+  18: Port [1, 2, -1] <ck_xor_tk>
+  19: ZXX [1, 2, 0]
+  20: XZZ [1, 2, 1]
+  21: Port [2, 0, 1] role=output <out_k>
+  22: ZZX [2, 1, 0]
+  23: ZXZ [2, 1, 1]
+  24: ZXX [2, 2, 0]
+  25: ZXZ [2, 2, 1]
+  26: XZ [5, 1, 2] <park_1_14>
+  27: XZ [5, 2, 2] <park_2_14>
+  28: ZXZ [3, 1, 1]
+  29: ZXZ [3, 2, 1]
+  30: ZXZ [4, 1, 1]
+  31: ZXZ [4, 2, 1]
+  32: ZXZ [5, 1, 1]
+  33: ZXZ [5, 2, 1]
+  0 -> +Y
+  0 -> +X
+  1 -> +Y
+  1 -> +X
+  2 -> +X
+  3 -> +Y
+  3 -> +X
+  4 -> +X
+  5 -H> +Z
+  6 -H> +Z
+  7 -> +X
+  8 -H> +Z
+  8 -> +X
+  9 -> +X
+  10 -> +Z
+  11 -> +Z
+  13 -> +Z
+  14 -> +Z
+  14 -> +Y
+  15 -> +X
+  16 -> +Y
+  16 -> +X
+  17 -> +Y
+  17 -> +X
+  18 -H> +Z
+  19 -H> +Z
+  22 -> +Y
+  23 -> +X
+  24 -> +Z
+  25 -> +X
+  28 -> +X
+  29 -> +X
+  30 -> +X
+  31 -> +X
+  32 -> +Z
+  33 -> +Z
+
+  m_ikprime = measure 14
+  m_anc = measure 0 -> +X
+  resolve 26 if !(m_anc ^ incoming_z)
+  resolve 27 if !(m_anc ^ incoming_z)
+  feedback Z 21 if m_anc
+
+}
+
+module HeadUmaParked {
+  in c_k_plus_1: data = 9
+  in i_prime_k: data = 12
+  in t_k: data = 17
+  out out_k: data = 20
+  in incoming_z
+  out erase = m_ikprime ^ m_anc
+  out carry_z = m_ikprime ^ m_anc ^ incoming_z
+
+  0: ZZX [-1, 0, 0]
+  1: XXZ [-1, 0, 1]
+  2: ZZX [-1, 1, 0]
+  3: XXZ [-1, 1, 1]
+  4: XXZ [-1, 2, 1]
+  5: XZX [0, 0, 0]
+  6: ZXZ [0, 0, 1]
+  7: XZX [0, 1, 0]
+  8: ZXZ [0, 1, 1]
+  9: Port [0, 2, -1] <c_k_plus_1>
+  10: ZXZ [0, 2, 0]
+  11: ZXZ [0, 2, 1]
+  12: Port [1, 0, -1] <i_prime_k>
+  13: ZXX [1, 0, 0]
+  14: ZXZ [1, 0, 1]
+  15: ZZX [1, 1, 0]
+  16: XXZ [1, 1, 1]
+  17: Port [1, 2, -1] <t_k>
+  18: ZXX [1, 2, 0]
+  19: XZZ [1, 2, 1]
+  20: Port [2, 0, 1] role=output <out_k>
+  21: ZZX [2, 1, 0] <fix_1_route_0>
+  22: ZXZ [2, 1, 1] <fix_0_route_0>
+  23: ZXX [2, 2, 0]
+  24: ZXZ [2, 2, 1]
+  25: XZ [5, 1, 2] <park_1_14>
+  26: XZ [5, 2, 2] <park_2_14>
+  27: ZXZ [3, 1, 1]
+  28: ZXZ [3, 2, 1]
+  29: ZXZ [4, 1, 1]
+  30: ZXZ [4, 2, 1]
+  31: ZXZ [5, 1, 1]
+  32: ZXZ [5, 2, 1]
+  0 -> +Y
+  0 -> +X
+  1 -> +Y
+  1 -> +X
+  2 -> +X
+  3 -> +Y
+  3 -> +X
+  4 -> +X
+  5 -H> +Z
+  6 -> +X
+  7 -H> +Z
+  7 -> +X
+  8 -> +X
+  9 -> +Z
+  10 -> +Z
+  12 -> +Z
+  13 -> +Z
+  13 -> +Y
+  14 -> +X
+  15 -> +Y
+  15 -> +X
+  16 -> +Y
+  16 -> +X
+  17 -H> +Z
+  18 -H> +Z
+  21 -> +Y
+  22 -> +X
+  23 -> +Z
+  24 -> +X
+  27 -> +X
+  28 -> +X
+  29 -> +X
+  30 -> +X
+  31 -> +Z
+  32 -> +Z
+
+  m_anc = measure 0 -> +X
+  resolve 25 if !(m_anc ^ incoming_z)
+  resolve 26 if !(m_anc ^ incoming_z)
+  m_ikprime = measure 13
+  feedback Z 20 if m_anc
+
+}
+
+module TailParity {
+  in i_prime_k: data = 1
+  in c_k: data = 6
+  out out_k: data = 10
+  in t_k: data = 11
+  out m_ikprime = erase_i
+
+  0: XXZ [0, 0, 0]
+  1: Port [0, 1, -1] <i_prime_k>
+  2: XZZ [0, 1, 0]
+  3: XXZ [0, 2, 0]
+  4: ZXZ [1, 0, 0]
+  5: ZXZ [1, 2, 0]
+  6: Port [2, -1, 0] role=input <c_k>
+  7: XXZ [2, 0, 0]
+  8: ZXZ [2, 2, 0]
+  9: XZZ [3, 0, 0]
+  10: Port [3, 0, 1] <out_k>
+  11: Port [3, 1, -1] <t_k>
+  12: XZZ [3, 1, 0]
+  13: XXZ [3, 2, 0]
+  0 -> +Y
+  0 -> +X
+  1 -> +Z
+  2 -> +Y
+  3 -> +X
+  4 -> +X
+  5 -> +X
+  6 -> +Y
+  8 -> +X
+  9 -> +Z
+  9 -> +Y
+  11 -> +Z
+  12 -> +Y
+
+  erase_i = measure 3 -> +X
+
+}
+
+module main {
+  in q_in: data = 1
+  out q_out: data = 5
+  in i0_in: data = 9
+  out i0_out: data = 10
+  in t0_in: data = 27
+  out s0_out: data = 41
+  in bit0_and_ccz_2: ccz = 52
+  in bit0_and_ccz_0: ccz = 53
+  in bit0_and_ccz_1: ccz = 54
+  in bit0_maj_ccz_1: ccz = 55
+  in bit0_maj_ccz_3: ccz = 56
+  in bit0_maj_ccz_2: ccz = 57
+  in i1_in: data = 74
+  out i1_out: data = 75
+  in t1_in: data = 95
+  out s1_out: data = 109
+  in bit1_and_ccz_2: ccz = 120
+  in bit1_and_ccz_0: ccz = 121
+  in bit1_and_ccz_1: ccz = 122
+  in bit1_maj_ccz_1: ccz = 123
+  in bit1_maj_ccz_3: ccz = 124
+  in bit1_maj_ccz_2: ccz = 125
+  in i2_in: data = 140
+  out i2_out: data = 141
+  in t2_in: data = 161
+  out s2_out: data = 175
+  in bit2_and_ccz_2: ccz = 186
+  in bit2_and_ccz_0: ccz = 187
+  in bit2_and_ccz_1: ccz = 188
+  in bit2_maj_ccz_1: ccz = 189
+  in bit2_maj_ccz_3: ccz = 190
+  in bit2_maj_ccz_2: ccz = 191
+  in i3_in: data = 206
+  out i3_out: data = 207
+  in t3_in: data = 227
+  out s3_out: data = 241
+  in bit3_and_ccz_2: ccz = 252
+  in bit3_and_ccz_0: ccz = 253
+  in bit3_and_ccz_1: ccz = 254
+  in bit3_maj_ccz_1: ccz = 255
+  in bit3_maj_ccz_3: ccz = 256
+  in bit3_maj_ccz_2: ccz = 257
+  in i4_in: data = 272
+  out i4_out: data = 273
+  in t4_in: data = 293
+  out s4_out: data = 307
+  in bit4_and_ccz_2: ccz = 318
+  in bit4_and_ccz_0: ccz = 319
+  in bit4_and_ccz_1: ccz = 320
+  in bit4_maj_ccz_1: ccz = 321
+  in bit4_maj_ccz_3: ccz = 322
+  in bit4_maj_ccz_2: ccz = 323
+  in i5_in: data = 338
+  out i5_out: data = 339
+  in t5_in: data = 359
+  out s5_out: data = 373
+  in bit5_and_ccz_2: ccz = 384
+  in bit5_and_ccz_0: ccz = 385
+  in bit5_and_ccz_1: ccz = 386
+  in bit5_maj_ccz_1: ccz = 387
+  in bit5_maj_ccz_3: ccz = 388
+  in bit5_maj_ccz_2: ccz = 389
+  in i6_in: data = 404
+  out i6_out: data = 405
+  in t6_in: data = 425
+  out s6_out: data = 439
+  in bit6_and_ccz_2: ccz = 450
+  in bit6_and_ccz_0: ccz = 451
+  in bit6_and_ccz_1: ccz = 452
+  in bit6_maj_ccz_1: ccz = 453
+  in bit6_maj_ccz_3: ccz = 454
+  in bit6_maj_ccz_2: ccz = 455
+  in i7_in: data = 470
+  out i7_out: data = 471
+  in t7_in: data = 491
+  out s7_out: data = 505
+  in bit7_and_ccz_2: ccz = 516
+  in bit7_and_ccz_0: ccz = 517
+  in bit7_and_ccz_1: ccz = 518
+  in bit7_maj_ccz_1: ccz = 519
+  in bit7_maj_ccz_3: ccz = 520
+  in bit7_maj_ccz_2: ccz = 521
+  in i8_in: data = 536
+  out i8_out: data = 537
+  in t8_in: data = 557
+  out s8_out: data = 571
+  in bit8_and_ccz_2: ccz = 582
+  in bit8_and_ccz_0: ccz = 583
+  in bit8_and_ccz_1: ccz = 584
+  in bit8_maj_ccz_1: ccz = 585
+  in bit8_maj_ccz_3: ccz = 586
+  in bit8_maj_ccz_2: ccz = 587
+  in i9_in: data = 629
+  out i9_out: data = 630
+  in t9_in: data = 648
+  out s9_out: data = 658
+  in bit9_and_ccz_2: ccz = 674
+  in bit9_and_ccz_0: ccz = 675
+  in bit9_and_ccz_1: ccz = 676
+  out raw_erase_0 = bit0_uma.erase
+  out raw_erase_1 = bit1_uma.erase
+  out raw_erase_2 = bit2_uma.erase
+  out raw_erase_3 = bit3_uma.erase
+  out raw_erase_4 = bit4_uma.erase
+  out raw_erase_5 = bit5_uma.erase
+  out raw_erase_6 = bit6_uma.erase
+  out raw_erase_7 = bit7_uma.erase
+  out raw_erase_8 = bit8_uma.erase
+  out raw_erase_9 = bit9_tail.m_ikprime
+
+  bit0_and: InjectedAnd @ [0, 0, 0]
+  bit0_maj: HeadMaj @ [0, 0, 3]
+  bit0_uma: HeadUmaParked @ [3, 0, 8]
+  bit1_and: InjectedAnd @ [0, 3, 0]
+  bit1_maj: BulkMaj @ [0, 3, 3]
+  bit1_uma: BulkUmaParked @ [3, 3, 8]
+  bit2_and: InjectedAnd @ [0, 6, 0]
+  bit2_maj: BulkMaj @ [0, 6, 3]
+  bit2_uma: BulkUmaParked @ [3, 6, 8]
+  bit3_and: InjectedAnd @ [0, 9, 0]
+  bit3_maj: BulkMaj @ [0, 9, 3]
+  bit3_uma: BulkUmaParked @ [3, 9, 8]
+  bit4_and: InjectedAnd @ [0, 12, 0]
+  bit4_maj: BulkMaj @ [0, 12, 3]
+  bit4_uma: BulkUmaParked @ [3, 12, 8]
+  bit5_and: InjectedAnd @ [0, 15, 0]
+  bit5_maj: BulkMaj @ [0, 15, 3]
+  bit5_uma: BulkUmaParked @ [3, 15, 8]
+  bit6_and: InjectedAnd @ [0, 18, 0]
+  bit6_maj: BulkMaj @ [0, 18, 3]
+  bit6_uma: BulkUmaParked @ [3, 18, 8]
+  bit7_and: InjectedAnd @ [0, 21, 0]
+  bit7_maj: BulkMaj @ [0, 21, 3]
+  bit7_uma: BulkUmaParked @ [3, 21, 8]
+  bit8_and: InjectedAnd @ [0, 24, 0]
+  bit8_maj: BulkMaj @ [0, 24, 3]
+  bit8_uma: BulkUmaParked @ [3, 24, 8]
+  bit9_and: InjectedAnd @ [0, 27, 0]
+  bit9_tail: TailParity @ [0, 27, 3]
+
+  0: XZZ [0, 1, 2]
+  1: Port [11, -1, 0] role=input <q_in>
+  2: XZZ [11, 0, 0]
+  3: XZZ [11, 2, 12] <q_route>
+  4: XZZ [11, 0, 12] <q_route>
+  5: Port [11, -1, 12] role=output <q_out>
+  6: ZXZ [7, 2, 0]
+  7: ZXZ [8, 2, 0]
+  8: ZXZ [6, 2, 0]
+  9: Port [10, 1, -1] role=input <i0_in>
+  10: Port [10, 1, 14] role=output <i0_rail>
+  11: XZX [10, 1, 0] <i0_copy>
+  12: XZX [10, 1, 1] <i0_rail>
+  13: XZX [10, 1, 2] <i0_rail>
+  14: XZX [10, 1, 3] <i0_rail>
+  15: XZX [10, 1, 4] <i0_rail>
+  16: XZX [10, 1, 5] <i0_rail>
+  17: XZX [10, 1, 6] <i0_rail>
+  18: XZX [10, 1, 7] <i0_rail>
+  19: XZX [10, 1, 8] <i0_rail>
+  20: XZX [10, 1, 9] <i0_rail>
+  21: XZX [10, 1, 10] <i0_rail>
+  22: XZX [10, 1, 11] <i0_rail>
+  23: XZX [10, 1, 13] <i0_rail>
+  24: XXZ [6, 0, 0] <i0_to_and>
+  25: XXZ [6, 1, 0] <i0_to_and>
+  26: ZXZ [5, 1, 0] <i0_to_and>
+  27: Port [10, 0, -1] role=input <t0_in>
+  28: XZX [10, 0, 0] <t0_to_core>
+  29: XZX [10, 0, 1] <t0_to_core>
+  30: XZX [10, 0, 2] <t0_to_core>
+  31: XZX [10, 0, 3] <t0_to_core>
+  32: XZX [10, 0, 4] <t0_to_core>
+  33: XZX [10, 0, 5] <t0_to_core>
+  34: XZX [10, 0, 6] <t0_to_core>
+  35: XZX [9, 0, 6] <t0_to_core>
+  36: XZX [8, 0, 6] <t0_to_core>
+  37: ZZX [7, 0, 6] <t0_to_core>
+  38: ZZX [7, 1, 6] <t0_to_core>
+  39: XZX [6, 1, 6] <t0_to_core>
+  40: XZX [5, 1, 6] <t0_to_core>
+  41: Port [10, 0, 14] role=output <s0_return>
+  42: ZXZ [5, 0, 9] <route>
+  43: ZXZ [6, 0, 9] <s0_return>
+  44: ZXZ [7, 0, 9] <s0_return>
+  45: ZXZ [8, 0, 9] <s0_return>
+  46: ZXZ [9, 0, 9] <s0_return>
+  47: ZXZ [10, 0, 9] <s0_return>
+  48: ZXX [10, 0, 10] <s0_return>
+  49: ZXX [10, 0, 11] <s0_return>
+  50: ZXX [10, 0, 12] <s0_return>
+  51: ZXX [10, 0, 13] <s0_return>
+  52: Port [-1, 0, 0] role=input <bit0_and_ccz_2>
+  53: Port [-1, 2, 0] role=input <bit0_and_ccz_0>
+  54: Port [-1, 1, 0] role=input <bit0_and_ccz_1>
+  55: Port [-1, 0, 5] role=input <bit0_maj_ccz_1>
+  56: Port [-1, 1, 5] role=input <bit0_maj_ccz_3>
+  57: Port [-1, 2, 5] role=input <bit0_maj_ccz_2>
+  58: ZXZ [7, 0, 0]
+  59: ZXX [7, 0, 1]
+  60: ZZX [7, 1, 1]
+  61: ZZX [8, 1, 1]
+  62: ZZX [9, 1, 1]
+  63: XZZ [11, 1, 0]
+  64: XXZ [11, 2, 0]
+  65: ZXZ [10, 2, 0]
+  66: ZXZ [9, 2, 0]
+  67: ZXZ [5, 2, 0]
+  68: XZZ [0, 4, 2]
+  69: XXZ [11, 5, 0]
+  70: XZZ [11, 4, 0]
+  71: XZZ [11, 3, 0]
+  72: XZZ [11, 5, 12] <q_route>
+  73: XZZ [11, 3, 12] <q_route>
+  74: Port [10, 4, -1] role=input <i1_in>
+  75: Port [10, 4, 14] role=output <i1_rail>
+  76: XZX [10, 4, 0] <i1_copy>
+  77: XZX [10, 4, 1] <i1_rail>
+  78: XZX [10, 4, 2] <i1_rail>
+  79: XZX [10, 4, 3] <i1_rail>
+  80: XZX [10, 4, 4] <i1_rail>
+  81: XZX [10, 4, 5] <i1_rail>
+  82: XZX [10, 4, 6] <i1_rail>
+  83: XZX [10, 4, 7] <i1_rail>
+  84: XZX [10, 4, 8] <i1_rail>
+  85: XZX [10, 4, 9] <i1_rail>
+  86: XZX [10, 4, 10] <i1_rail>
+  87: XZX [10, 4, 11] <i1_rail>
+  88: XZX [10, 4, 13] <i1_rail>
+  89: ZZX [9, 4, 1]
+  90: ZZX [8, 4, 1]
+  91: ZXZ [7, 3, 0] <i1_to_and>
+  92: XXZ [6, 3, 0] <i1_to_and>
+  93: XXZ [6, 4, 0] <i1_to_and>
+  94: ZXZ [5, 4, 0] <i1_to_and>
+  95: Port [10, 3, -1] role=input <t1_in>
+  96: XZX [10, 3, 0] <t1_to_core>
+  97: XZX [10, 3, 1] <t1_to_core>
+  98: XZX [10, 3, 2] <t1_to_core>
+  99: XZX [10, 3, 3] <t1_to_core>
+  100: XZX [10, 3, 4] <t1_to_core>
+  101: XZX [10, 3, 5] <t1_to_core>
+  102: XZX [10, 3, 6] <t1_to_core>
+  103: XZX [9, 3, 6] <t1_to_core>
+  104: XZX [8, 3, 6] <t1_to_core>
+  105: ZZX [7, 3, 6] <t1_to_core>
+  106: ZZX [7, 4, 6] <t1_to_core>
+  107: XZX [6, 4, 6] <t1_to_core>
+  108: XZX [5, 4, 6] <t1_to_core>
+  109: Port [10, 3, 14] role=output <s1_return>
+  110: ZXZ [5, 3, 9] <route>
+  111: ZXZ [6, 3, 9] <s1_return>
+  112: ZXZ [7, 3, 9] <s1_return>
+  113: ZXZ [8, 3, 9] <s1_return>
+  114: ZXZ [9, 3, 9] <s1_return>
+  115: ZXZ [10, 3, 9] <s1_return>
+  116: ZXX [10, 3, 10] <s1_return>
+  117: ZXX [10, 3, 11] <s1_return>
+  118: ZXX [10, 3, 12] <s1_return>
+  119: ZXX [10, 3, 13] <s1_return>
+  120: Port [-1, 3, 0] role=input <bit1_and_ccz_2>
+  121: Port [-1, 5, 0] role=input <bit1_and_ccz_0>
+  122: Port [-1, 4, 0] role=input <bit1_and_ccz_1>
+  123: Port [-1, 3, 5] role=input <bit1_maj_ccz_1>
+  124: Port [-1, 4, 5] role=input <bit1_maj_ccz_3>
+  125: Port [-1, 5, 5] role=input <bit1_maj_ccz_2>
+  126: ZXZ [10, 5, 0]
+  127: ZXZ [9, 5, 0]
+  128: ZXZ [8, 5, 0]
+  129: ZXZ [7, 5, 0]
+  130: ZZX [7, 4, 1]
+  131: ZXX [7, 3, 1]
+  132: ZXZ [5, 5, 0]
+  133: ZXZ [6, 5, 0]
+  134: XZZ [0, 7, 2]
+  135: XXZ [11, 8, 0]
+  136: XZZ [11, 7, 0]
+  137: XZZ [11, 6, 0]
+  138: XZZ [11, 8, 12] <q_route>
+  139: XZZ [11, 6, 12] <q_route>
+  140: Port [10, 7, -1] role=input <i2_in>
+  141: Port [10, 7, 14] role=output <i2_rail>
+  142: XZX [10, 7, 0] <i2_copy>
+  143: XZX [10, 7, 1] <i2_rail>
+  144: XZX [10, 7, 2] <i2_rail>
+  145: XZX [10, 7, 3] <i2_rail>
+  146: XZX [10, 7, 4] <i2_rail>
+  147: XZX [10, 7, 5] <i2_rail>
+  148: XZX [10, 7, 6] <i2_rail>
+  149: XZX [10, 7, 7] <i2_rail>
+  150: XZX [10, 7, 8] <i2_rail>
+  151: XZX [10, 7, 9] <i2_rail>
+  152: XZX [10, 7, 10] <i2_rail>
+  153: XZX [10, 7, 11] <i2_rail>
+  154: XZX [10, 7, 13] <i2_rail>
+  155: ZZX [9, 7, 1]
+  156: ZZX [8, 7, 1]
+  157: ZXZ [7, 6, 0] <i2_to_and>
+  158: XXZ [6, 6, 0] <i2_to_and>
+  159: XXZ [6, 7, 0] <i2_to_and>
+  160: ZXZ [5, 7, 0] <i2_to_and>
+  161: Port [10, 6, -1] role=input <t2_in>
+  162: XZX [10, 6, 0] <t2_to_core>
+  163: XZX [10, 6, 1] <t2_to_core>
+  164: XZX [10, 6, 2] <t2_to_core>
+  165: XZX [10, 6, 3] <t2_to_core>
+  166: XZX [10, 6, 4] <t2_to_core>
+  167: XZX [10, 6, 5] <t2_to_core>
+  168: XZX [10, 6, 6] <t2_to_core>
+  169: XZX [9, 6, 6] <t2_to_core>
+  170: XZX [8, 6, 6] <t2_to_core>
+  171: ZZX [7, 6, 6] <t2_to_core>
+  172: ZZX [7, 7, 6] <t2_to_core>
+  173: XZX [6, 7, 6] <t2_to_core>
+  174: XZX [5, 7, 6] <t2_to_core>
+  175: Port [10, 6, 14] role=output <s2_return>
+  176: ZXZ [5, 6, 9] <route>
+  177: ZXZ [6, 6, 9] <s2_return>
+  178: ZXZ [7, 6, 9] <s2_return>
+  179: ZXZ [8, 6, 9] <s2_return>
+  180: ZXZ [9, 6, 9] <s2_return>
+  181: ZXZ [10, 6, 9] <s2_return>
+  182: ZXX [10, 6, 10] <s2_return>
+  183: ZXX [10, 6, 11] <s2_return>
+  184: ZXX [10, 6, 12] <s2_return>
+  185: ZXX [10, 6, 13] <s2_return>
+  186: Port [-1, 6, 0] role=input <bit2_and_ccz_2>
+  187: Port [-1, 8, 0] role=input <bit2_and_ccz_0>
+  188: Port [-1, 7, 0] role=input <bit2_and_ccz_1>
+  189: Port [-1, 6, 5] role=input <bit2_maj_ccz_1>
+  190: Port [-1, 7, 5] role=input <bit2_maj_ccz_3>
+  191: Port [-1, 8, 5] role=input <bit2_maj_ccz_2>
+  192: ZXZ [10, 8, 0]
+  193: ZXZ [9, 8, 0]
+  194: ZXZ [8, 8, 0]
+  195: ZXZ [7, 8, 0]
+  196: ZZX [7, 7, 1]
+  197: ZXX [7, 6, 1]
+  198: ZXZ [5, 8, 0]
+  199: ZXZ [6, 8, 0]
+  200: XZZ [0, 10, 2]
+  201: XXZ [11, 11, 0]
+  202: XZZ [11, 10, 0]
+  203: XZZ [11, 9, 0]
+  204: XZZ [11, 11, 12] <q_route>
+  205: XZZ [11, 9, 12] <q_route>
+  206: Port [10, 10, -1] role=input <i3_in>
+  207: Port [10, 10, 14] role=output <i3_rail>
+  208: XZX [10, 10, 0] <i3_copy>
+  209: XZX [10, 10, 1] <i3_rail>
+  210: XZX [10, 10, 2] <i3_rail>
+  211: XZX [10, 10, 3] <i3_rail>
+  212: XZX [10, 10, 4] <i3_rail>
+  213: XZX [10, 10, 5] <i3_rail>
+  214: XZX [10, 10, 6] <i3_rail>
+  215: XZX [10, 10, 7] <i3_rail>
+  216: XZX [10, 10, 8] <i3_rail>
+  217: XZX [10, 10, 9] <i3_rail>
+  218: XZX [10, 10, 10] <i3_rail>
+  219: XZX [10, 10, 11] <i3_rail>
+  220: XZX [10, 10, 13] <i3_rail>
+  221: ZZX [9, 10, 1]
+  222: ZZX [8, 10, 1]
+  223: ZXZ [7, 9, 0] <i3_to_and>
+  224: XXZ [6, 9, 0] <i3_to_and>
+  225: XXZ [6, 10, 0] <i3_to_and>
+  226: ZXZ [5, 10, 0] <i3_to_and>
+  227: Port [10, 9, -1] role=input <t3_in>
+  228: XZX [10, 9, 0] <t3_to_core>
+  229: XZX [10, 9, 1] <t3_to_core>
+  230: XZX [10, 9, 2] <t3_to_core>
+  231: XZX [10, 9, 3] <t3_to_core>
+  232: XZX [10, 9, 4] <t3_to_core>
+  233: XZX [10, 9, 5] <t3_to_core>
+  234: XZX [10, 9, 6] <t3_to_core>
+  235: XZX [9, 9, 6] <t3_to_core>
+  236: XZX [8, 9, 6] <t3_to_core>
+  237: ZZX [7, 9, 6] <t3_to_core>
+  238: ZZX [7, 10, 6] <t3_to_core>
+  239: XZX [6, 10, 6] <t3_to_core>
+  240: XZX [5, 10, 6] <t3_to_core>
+  241: Port [10, 9, 14] role=output <s3_return>
+  242: ZXZ [5, 9, 9] <route>
+  243: ZXZ [6, 9, 9] <s3_return>
+  244: ZXZ [7, 9, 9] <s3_return>
+  245: ZXZ [8, 9, 9] <s3_return>
+  246: ZXZ [9, 9, 9] <s3_return>
+  247: ZXZ [10, 9, 9] <s3_return>
+  248: ZXX [10, 9, 10] <s3_return>
+  249: ZXX [10, 9, 11] <s3_return>
+  250: ZXX [10, 9, 12] <s3_return>
+  251: ZXX [10, 9, 13] <s3_return>
+  252: Port [-1, 9, 0] role=input <bit3_and_ccz_2>
+  253: Port [-1, 11, 0] role=input <bit3_and_ccz_0>
+  254: Port [-1, 10, 0] role=input <bit3_and_ccz_1>
+  255: Port [-1, 9, 5] role=input <bit3_maj_ccz_1>
+  256: Port [-1, 10, 5] role=input <bit3_maj_ccz_3>
+  257: Port [-1, 11, 5] role=input <bit3_maj_ccz_2>
+  258: ZXZ [10, 11, 0]
+  259: ZXZ [9, 11, 0]
+  260: ZXZ [8, 11, 0]
+  261: ZXZ [7, 11, 0]
+  262: ZZX [7, 10, 1]
+  263: ZXX [7, 9, 1]
+  264: ZXZ [5, 11, 0]
+  265: ZXZ [6, 11, 0]
+  266: XZZ [0, 13, 2]
+  267: XXZ [11, 14, 0]
+  268: XZZ [11, 13, 0]
+  269: XZZ [11, 12, 0]
+  270: XZZ [11, 14, 12] <q_route>
+  271: XZZ [11, 12, 12] <q_route>
+  272: Port [10, 13, -1] role=input <i4_in>
+  273: Port [10, 13, 14] role=output <i4_rail>
+  274: XZX [10, 13, 0] <i4_copy>
+  275: XZX [10, 13, 1] <i4_rail>
+  276: XZX [10, 13, 2] <i4_rail>
+  277: XZX [10, 13, 3] <i4_rail>
+  278: XZX [10, 13, 4] <i4_rail>
+  279: XZX [10, 13, 5] <i4_rail>
+  280: XZX [10, 13, 6] <i4_rail>
+  281: XZX [10, 13, 7] <i4_rail>
+  282: XZX [10, 13, 8] <i4_rail>
+  283: XZX [10, 13, 9] <i4_rail>
+  284: XZX [10, 13, 10] <i4_rail>
+  285: XZX [10, 13, 11] <i4_rail>
+  286: XZX [10, 13, 13] <i4_rail>
+  287: ZZX [9, 13, 1]
+  288: ZZX [8, 13, 1]
+  289: ZXZ [7, 12, 0] <i4_to_and>
+  290: XXZ [6, 12, 0] <i4_to_and>
+  291: XXZ [6, 13, 0] <i4_to_and>
+  292: ZXZ [5, 13, 0] <i4_to_and>
+  293: Port [10, 12, -1] role=input <t4_in>
+  294: XZX [10, 12, 0] <t4_to_core>
+  295: XZX [10, 12, 1] <t4_to_core>
+  296: XZX [10, 12, 2] <t4_to_core>
+  297: XZX [10, 12, 3] <t4_to_core>
+  298: XZX [10, 12, 4] <t4_to_core>
+  299: XZX [10, 12, 5] <t4_to_core>
+  300: XZX [10, 12, 6] <t4_to_core>
+  301: XZX [9, 12, 6] <t4_to_core>
+  302: XZX [8, 12, 6] <t4_to_core>
+  303: ZZX [7, 12, 6] <t4_to_core>
+  304: ZZX [7, 13, 6] <t4_to_core>
+  305: XZX [6, 13, 6] <t4_to_core>
+  306: XZX [5, 13, 6] <t4_to_core>
+  307: Port [10, 12, 14] role=output <s4_return>
+  308: ZXZ [5, 12, 9] <route>
+  309: ZXZ [6, 12, 9] <s4_return>
+  310: ZXZ [7, 12, 9] <s4_return>
+  311: ZXZ [8, 12, 9] <s4_return>
+  312: ZXZ [9, 12, 9] <s4_return>
+  313: ZXZ [10, 12, 9] <s4_return>
+  314: ZXX [10, 12, 10] <s4_return>
+  315: ZXX [10, 12, 11] <s4_return>
+  316: ZXX [10, 12, 12] <s4_return>
+  317: ZXX [10, 12, 13] <s4_return>
+  318: Port [-1, 12, 0] role=input <bit4_and_ccz_2>
+  319: Port [-1, 14, 0] role=input <bit4_and_ccz_0>
+  320: Port [-1, 13, 0] role=input <bit4_and_ccz_1>
+  321: Port [-1, 12, 5] role=input <bit4_maj_ccz_1>
+  322: Port [-1, 13, 5] role=input <bit4_maj_ccz_3>
+  323: Port [-1, 14, 5] role=input <bit4_maj_ccz_2>
+  324: ZXZ [10, 14, 0]
+  325: ZXZ [9, 14, 0]
+  326: ZXZ [8, 14, 0]
+  327: ZXZ [7, 14, 0]
+  328: ZZX [7, 13, 1]
+  329: ZXX [7, 12, 1]
+  330: ZXZ [5, 14, 0]
+  331: ZXZ [6, 14, 0]
+  332: XZZ [0, 16, 2]
+  333: XXZ [11, 17, 0]
+  334: XZZ [11, 16, 0]
+  335: XZZ [11, 15, 0]
+  336: XZZ [11, 17, 12] <q_route>
+  337: XZZ [11, 15, 12] <q_route>
+  338: Port [10, 16, -1] role=input <i5_in>
+  339: Port [10, 16, 14] role=output <i5_rail>
+  340: XZX [10, 16, 0] <i5_copy>
+  341: XZX [10, 16, 1] <i5_rail>
+  342: XZX [10, 16, 2] <i5_rail>
+  343: XZX [10, 16, 3] <i5_rail>
+  344: XZX [10, 16, 4] <i5_rail>
+  345: XZX [10, 16, 5] <i5_rail>
+  346: XZX [10, 16, 6] <i5_rail>
+  347: XZX [10, 16, 7] <i5_rail>
+  348: XZX [10, 16, 8] <i5_rail>
+  349: XZX [10, 16, 9] <i5_rail>
+  350: XZX [10, 16, 10] <i5_rail>
+  351: XZX [10, 16, 11] <i5_rail>
+  352: XZX [10, 16, 13] <i5_rail>
+  353: ZZX [9, 16, 1]
+  354: ZZX [8, 16, 1]
+  355: ZXZ [7, 15, 0] <i5_to_and>
+  356: XXZ [6, 15, 0] <i5_to_and>
+  357: XXZ [6, 16, 0] <i5_to_and>
+  358: ZXZ [5, 16, 0] <i5_to_and>
+  359: Port [10, 15, -1] role=input <t5_in>
+  360: XZX [10, 15, 0] <t5_to_core>
+  361: XZX [10, 15, 1] <t5_to_core>
+  362: XZX [10, 15, 2] <t5_to_core>
+  363: XZX [10, 15, 3] <t5_to_core>
+  364: XZX [10, 15, 4] <t5_to_core>
+  365: XZX [10, 15, 5] <t5_to_core>
+  366: XZX [10, 15, 6] <t5_to_core>
+  367: XZX [9, 15, 6] <t5_to_core>
+  368: XZX [8, 15, 6] <t5_to_core>
+  369: ZZX [7, 15, 6] <t5_to_core>
+  370: ZZX [7, 16, 6] <t5_to_core>
+  371: XZX [6, 16, 6] <t5_to_core>
+  372: XZX [5, 16, 6] <t5_to_core>
+  373: Port [10, 15, 14] role=output <s5_return>
+  374: ZXZ [5, 15, 9] <route>
+  375: ZXZ [6, 15, 9] <s5_return>
+  376: ZXZ [7, 15, 9] <s5_return>
+  377: ZXZ [8, 15, 9] <s5_return>
+  378: ZXZ [9, 15, 9] <s5_return>
+  379: ZXZ [10, 15, 9] <s5_return>
+  380: ZXX [10, 15, 10] <s5_return>
+  381: ZXX [10, 15, 11] <s5_return>
+  382: ZXX [10, 15, 12] <s5_return>
+  383: ZXX [10, 15, 13] <s5_return>
+  384: Port [-1, 15, 0] role=input <bit5_and_ccz_2>
+  385: Port [-1, 17, 0] role=input <bit5_and_ccz_0>
+  386: Port [-1, 16, 0] role=input <bit5_and_ccz_1>
+  387: Port [-1, 15, 5] role=input <bit5_maj_ccz_1>
+  388: Port [-1, 16, 5] role=input <bit5_maj_ccz_3>
+  389: Port [-1, 17, 5] role=input <bit5_maj_ccz_2>
+  390: ZXZ [10, 17, 0]
+  391: ZXZ [9, 17, 0]
+  392: ZXZ [8, 17, 0]
+  393: ZXZ [7, 17, 0]
+  394: ZZX [7, 16, 1]
+  395: ZXX [7, 15, 1]
+  396: ZXZ [5, 17, 0]
+  397: ZXZ [6, 17, 0]
+  398: XZZ [0, 19, 2]
+  399: XXZ [11, 20, 0]
+  400: XZZ [11, 19, 0]
+  401: XZZ [11, 18, 0]
+  402: XZZ [11, 20, 12] <q_route>
+  403: XZZ [11, 18, 12] <q_route>
+  404: Port [10, 19, -1] role=input <i6_in>
+  405: Port [10, 19, 14] role=output <i6_rail>
+  406: XZX [10, 19, 0] <i6_copy>
+  407: XZX [10, 19, 1] <i6_rail>
+  408: XZX [10, 19, 2] <i6_rail>
+  409: XZX [10, 19, 3] <i6_rail>
+  410: XZX [10, 19, 4] <i6_rail>
+  411: XZX [10, 19, 5] <i6_rail>
+  412: XZX [10, 19, 6] <i6_rail>
+  413: XZX [10, 19, 7] <i6_rail>
+  414: XZX [10, 19, 8] <i6_rail>
+  415: XZX [10, 19, 9] <i6_rail>
+  416: XZX [10, 19, 10] <i6_rail>
+  417: XZX [10, 19, 11] <i6_rail>
+  418: XZX [10, 19, 13] <i6_rail>
+  419: ZZX [9, 19, 1]
+  420: ZZX [8, 19, 1]
+  421: ZXZ [7, 18, 0] <i6_to_and>
+  422: XXZ [6, 18, 0] <i6_to_and>
+  423: XXZ [6, 19, 0] <i6_to_and>
+  424: ZXZ [5, 19, 0] <i6_to_and>
+  425: Port [10, 18, -1] role=input <t6_in>
+  426: XZX [10, 18, 0] <t6_to_core>
+  427: XZX [10, 18, 1] <t6_to_core>
+  428: XZX [10, 18, 2] <t6_to_core>
+  429: XZX [10, 18, 3] <t6_to_core>
+  430: XZX [10, 18, 4] <t6_to_core>
+  431: XZX [10, 18, 5] <t6_to_core>
+  432: XZX [10, 18, 6] <t6_to_core>
+  433: XZX [9, 18, 6] <t6_to_core>
+  434: XZX [8, 18, 6] <t6_to_core>
+  435: ZZX [7, 18, 6] <t6_to_core>
+  436: ZZX [7, 19, 6] <t6_to_core>
+  437: XZX [6, 19, 6] <t6_to_core>
+  438: XZX [5, 19, 6] <t6_to_core>
+  439: Port [10, 18, 14] role=output <s6_return>
+  440: ZXZ [5, 18, 9] <route>
+  441: ZXZ [6, 18, 9] <s6_return>
+  442: ZXZ [7, 18, 9] <s6_return>
+  443: ZXZ [8, 18, 9] <s6_return>
+  444: ZXZ [9, 18, 9] <s6_return>
+  445: ZXZ [10, 18, 9] <s6_return>
+  446: ZXX [10, 18, 10] <s6_return>
+  447: ZXX [10, 18, 11] <s6_return>
+  448: ZXX [10, 18, 12] <s6_return>
+  449: ZXX [10, 18, 13] <s6_return>
+  450: Port [-1, 18, 0] role=input <bit6_and_ccz_2>
+  451: Port [-1, 20, 0] role=input <bit6_and_ccz_0>
+  452: Port [-1, 19, 0] role=input <bit6_and_ccz_1>
+  453: Port [-1, 18, 5] role=input <bit6_maj_ccz_1>
+  454: Port [-1, 19, 5] role=input <bit6_maj_ccz_3>
+  455: Port [-1, 20, 5] role=input <bit6_maj_ccz_2>
+  456: ZXZ [10, 20, 0]
+  457: ZXZ [9, 20, 0]
+  458: ZXZ [8, 20, 0]
+  459: ZXZ [7, 20, 0]
+  460: ZZX [7, 19, 1]
+  461: ZXX [7, 18, 1]
+  462: ZXZ [5, 20, 0]
+  463: ZXZ [6, 20, 0]
+  464: XZZ [0, 22, 2]
+  465: XXZ [11, 23, 0]
+  466: XZZ [11, 22, 0]
+  467: XZZ [11, 21, 0]
+  468: XZZ [11, 23, 12] <q_route>
+  469: XZZ [11, 21, 12] <q_route>
+  470: Port [10, 22, -1] role=input <i7_in>
+  471: Port [10, 22, 14] role=output <i7_rail>
+  472: XZX [10, 22, 0] <i7_copy>
+  473: XZX [10, 22, 1] <i7_rail>
+  474: XZX [10, 22, 2] <i7_rail>
+  475: XZX [10, 22, 3] <i7_rail>
+  476: XZX [10, 22, 4] <i7_rail>
+  477: XZX [10, 22, 5] <i7_rail>
+  478: XZX [10, 22, 6] <i7_rail>
+  479: XZX [10, 22, 7] <i7_rail>
+  480: XZX [10, 22, 8] <i7_rail>
+  481: XZX [10, 22, 9] <i7_rail>
+  482: XZX [10, 22, 10] <i7_rail>
+  483: XZX [10, 22, 11] <i7_rail>
+  484: XZX [10, 22, 13] <i7_rail>
+  485: ZZX [9, 22, 1]
+  486: ZZX [8, 22, 1]
+  487: ZXZ [7, 21, 0] <i7_to_and>
+  488: XXZ [6, 21, 0] <i7_to_and>
+  489: XXZ [6, 22, 0] <i7_to_and>
+  490: ZXZ [5, 22, 0] <i7_to_and>
+  491: Port [10, 21, -1] role=input <t7_in>
+  492: XZX [10, 21, 0] <t7_to_core>
+  493: XZX [10, 21, 1] <t7_to_core>
+  494: XZX [10, 21, 2] <t7_to_core>
+  495: XZX [10, 21, 3] <t7_to_core>
+  496: XZX [10, 21, 4] <t7_to_core>
+  497: XZX [10, 21, 5] <t7_to_core>
+  498: XZX [10, 21, 6] <t7_to_core>
+  499: XZX [9, 21, 6] <t7_to_core>
+  500: XZX [8, 21, 6] <t7_to_core>
+  501: ZZX [7, 21, 6] <t7_to_core>
+  502: ZZX [7, 22, 6] <t7_to_core>
+  503: XZX [6, 22, 6] <t7_to_core>
+  504: XZX [5, 22, 6] <t7_to_core>
+  505: Port [10, 21, 14] role=output <s7_return>
+  506: ZXZ [5, 21, 9] <route>
+  507: ZXZ [6, 21, 9] <s7_return>
+  508: ZXZ [7, 21, 9] <s7_return>
+  509: ZXZ [8, 21, 9] <s7_return>
+  510: ZXZ [9, 21, 9] <s7_return>
+  511: ZXZ [10, 21, 9] <s7_return>
+  512: ZXX [10, 21, 10] <s7_return>
+  513: ZXX [10, 21, 11] <s7_return>
+  514: ZXX [10, 21, 12] <s7_return>
+  515: ZXX [10, 21, 13] <s7_return>
+  516: Port [-1, 21, 0] role=input <bit7_and_ccz_2>
+  517: Port [-1, 23, 0] role=input <bit7_and_ccz_0>
+  518: Port [-1, 22, 0] role=input <bit7_and_ccz_1>
+  519: Port [-1, 21, 5] role=input <bit7_maj_ccz_1>
+  520: Port [-1, 22, 5] role=input <bit7_maj_ccz_3>
+  521: Port [-1, 23, 5] role=input <bit7_maj_ccz_2>
+  522: ZXZ [10, 23, 0]
+  523: ZXZ [9, 23, 0]
+  524: ZXZ [8, 23, 0]
+  525: ZXZ [7, 23, 0]
+  526: ZZX [7, 22, 1]
+  527: ZXX [7, 21, 1]
+  528: ZXZ [5, 23, 0]
+  529: ZXZ [6, 23, 0]
+  530: XZZ [0, 25, 2]
+  531: XXZ [11, 26, 0]
+  532: XZZ [11, 25, 0]
+  533: XZZ [11, 24, 0]
+  534: XZZ [11, 26, 12] <q_route>
+  535: XZZ [11, 24, 12] <q_route>
+  536: Port [10, 25, -1] role=input <i8_in>
+  537: Port [10, 25, 14] role=output <i8_rail>
+  538: XZX [10, 25, 0] <i8_copy>
+  539: XZX [10, 25, 1] <i8_rail>
+  540: XZX [10, 25, 2] <i8_rail>
+  541: XZX [10, 25, 3] <i8_rail>
+  542: XZX [10, 25, 4] <i8_rail>
+  543: XZX [10, 25, 5] <i8_rail>
+  544: XZX [10, 25, 6] <i8_rail>
+  545: XZX [10, 25, 7] <i8_rail>
+  546: XZX [10, 25, 8] <i8_rail>
+  547: XZX [10, 25, 9] <i8_rail>
+  548: XZX [10, 25, 10] <i8_rail>
+  549: XZX [10, 25, 11] <i8_rail>
+  550: XZX [10, 25, 13] <i8_rail>
+  551: ZZX [9, 25, 1]
+  552: ZZX [8, 25, 1]
+  553: ZXZ [7, 24, 0] <i8_to_and>
+  554: XXZ [6, 24, 0] <i8_to_and>
+  555: XXZ [6, 25, 0] <i8_to_and>
+  556: ZXZ [5, 25, 0] <i8_to_and>
+  557: Port [10, 24, -1] role=input <t8_in>
+  558: XZX [10, 24, 0] <t8_to_core>
+  559: XZX [10, 24, 1] <t8_to_core>
+  560: XZX [10, 24, 2] <t8_to_core>
+  561: XZX [10, 24, 3] <t8_to_core>
+  562: XZX [10, 24, 4] <t8_to_core>
+  563: XZX [10, 24, 5] <t8_to_core>
+  564: XZX [10, 24, 6] <t8_to_core>
+  565: XZX [9, 24, 6] <t8_to_core>
+  566: XZX [8, 24, 6] <t8_to_core>
+  567: ZZX [7, 24, 6] <t8_to_core>
+  568: ZZX [7, 25, 6] <t8_to_core>
+  569: XZX [6, 25, 6] <t8_to_core>
+  570: XZX [5, 25, 6] <t8_to_core>
+  571: Port [10, 24, 14] role=output <s8_return>
+  572: ZXZ [5, 24, 9] <route>
+  573: ZXZ [6, 24, 9] <s8_return>
+  574: ZXZ [7, 24, 9] <s8_return>
+  575: ZXZ [8, 24, 9] <s8_return>
+  576: ZXZ [9, 24, 9] <s8_return>
+  577: ZXZ [10, 24, 9] <s8_return>
+  578: ZXX [10, 24, 10] <s8_return>
+  579: ZXX [10, 24, 11] <s8_return>
+  580: ZXX [10, 24, 12] <s8_return>
+  581: ZXX [10, 24, 13] <s8_return>
+  582: Port [-1, 24, 0] role=input <bit8_and_ccz_2>
+  583: Port [-1, 26, 0] role=input <bit8_and_ccz_0>
+  584: Port [-1, 25, 0] role=input <bit8_and_ccz_1>
+  585: Port [-1, 24, 5] role=input <bit8_maj_ccz_1>
+  586: Port [-1, 25, 5] role=input <bit8_maj_ccz_3>
+  587: Port [-1, 26, 5] role=input <bit8_maj_ccz_2>
+  588: ZXZ [10, 26, 0]
+  589: ZXZ [9, 26, 0]
+  590: ZXZ [8, 26, 0]
+  591: ZXZ [7, 26, 0]
+  592: ZZX [7, 25, 1]
+  593: ZXX [7, 24, 1]
+  594: ZXZ [5, 26, 0]
+  595: ZXZ [6, 26, 0]
+  596: XZX [4, 28, 2] <t_route>
+  597: XZX [3, 28, 2] <t_route>
+  598: XZZ [3, 27, 4] <sum_route>
+  599: XXZ [3, 28, 4] <sum_route>
+  600: XXZ [4, 28, 4] <sum_route>
+  601: XXZ [4, 27, 4] <sum_route>
+  602: XZZ [0, 28, 2]
+  603: XZZ [11, 30, 5]
+  604: XZZ [11, 30, 2]
+  605: XZZ [11, 30, 6]
+  606: XZZ [11, 30, 9]
+  607: XZZ [11, 30, 3]
+  608: XZZ [11, 30, 10]
+  609: XZZ [11, 30, 11]
+  610: XZZ [11, 30, 4]
+  611: XZZ [11, 30, 8]
+  612: XXZ [11, 29, 0]
+  613: XZZ [11, 30, 0]
+  614: XZZ [11, 30, 7]
+  615: XZZ [11, 28, 0]
+  616: XZZ [11, 27, 0]
+  617: XZZ [11, 29, 12]
+  618: XZZ [11, 27, 12] <q_route>
+  619: ZZX [9, 28, 1]
+  620: ZXZ [5, 29, 0]
+  621: ZXZ [6, 29, 0]
+  622: ZXZ [8, 29, 0]
+  623: ZXZ [7, 29, 0]
+  624: ZXZ [9, 29, 0]
+  625: ZXZ [10, 29, 0]
+  626: ZXX [7, 27, 1]
+  627: ZZX [7, 28, 1]
+  628: ZZX [8, 28, 1]
+  629: Port [10, 28, -1] role=input <i9_in>
+  630: Port [10, 28, 14] role=output <i9_rail>
+  631: XZX [10, 28, 0] <i9_copy>
+  632: XZX [10, 28, 1] <i9_rail>
+  633: XZX [10, 28, 2] <i9_rail>
+  634: XZX [10, 28, 3] <i9_rail>
+  635: XZX [10, 28, 4] <i9_rail>
+  636: XZX [10, 28, 5] <i9_rail>
+  637: XZX [10, 28, 6] <i9_rail>
+  638: XZX [10, 28, 7] <i9_rail>
+  639: XZX [10, 28, 8] <i9_rail>
+  640: XZX [10, 28, 9] <i9_rail>
+  641: XZX [10, 28, 10] <i9_rail>
+  642: XZX [10, 28, 11] <i9_rail>
+  643: XZX [10, 28, 13] <i9_rail>
+  644: ZXZ [7, 27, 0] <i9_to_and>
+  645: XXZ [6, 27, 0] <i9_to_and>
+  646: XXZ [6, 28, 0] <i9_to_and>
+  647: ZXZ [5, 28, 0] <i9_to_and>
+  648: Port [10, 27, -1] role=input <t9_in>
+  649: XZX [10, 27, 0] <t9_to_core>
+  650: XZX [10, 27, 1] <t9_to_core>
+  651: XZX [10, 27, 2] <t9_to_core>
+  652: XZX [9, 27, 2] <t9_to_core>
+  653: XZX [8, 27, 2] <t9_to_core>
+  654: ZZX [7, 27, 2] <t9_to_core>
+  655: ZZX [7, 28, 2] <t9_to_core>
+  656: XZX [6, 28, 2] <t9_to_core>
+  657: XZX [5, 28, 2] <t9_to_core>
+  658: Port [10, 27, 14] role=output <s9_return>
+  659: ZXZ [5, 27, 4] <route>
+  660: ZXZ [6, 27, 4] <s9_return>
+  661: ZXZ [7, 27, 4] <s9_return>
+  662: ZXZ [8, 27, 4] <s9_return>
+  663: ZXZ [9, 27, 4] <s9_return>
+  664: ZXZ [10, 27, 4] <s9_return>
+  665: ZXX [10, 27, 5] <s9_return>
+  666: ZXX [10, 27, 6] <s9_return>
+  667: ZXX [10, 27, 7] <s9_return>
+  668: ZXX [10, 27, 8] <s9_return>
+  669: ZXX [10, 27, 9] <s9_return>
+  670: ZXX [10, 27, 10] <s9_return>
+  671: ZXX [10, 27, 11] <s9_return>
+  672: ZXX [10, 27, 12] <s9_return>
+  673: ZXX [10, 27, 13] <s9_return>
+  674: Port [-1, 27, 0] role=input <bit9_and_ccz_2>
+  675: Port [-1, 29, 0] role=input <bit9_and_ccz_0>
+  676: Port [-1, 28, 0] role=input <bit9_and_ccz_1>
+  677: XZZ [11, 30, 1]
+  678: XZZ [11, 30, 12]
+  598 -> +Y
+  599 -> +X
+  601 -> +X
+  596 -> -X
+  600 -> -Y
+  42 -> +X
+  26 -> +X
+  40 -> +X
+  67 -> +X
+  110 -> +X
+  94 -> +X
+  108 -> +X
+  132 -> +X
+  176 -> +X
+  160 -> +X
+  174 -> +X
+  198 -> +X
+  242 -> +X
+  226 -> +X
+  240 -> +X
+  264 -> +X
+  308 -> +X
+  292 -> +X
+  306 -> +X
+  330 -> +X
+  374 -> +X
+  358 -> +X
+  372 -> +X
+  396 -> +X
+  440 -> +X
+  424 -> +X
+  438 -> +X
+  462 -> +X
+  506 -> +X
+  490 -> +X
+  504 -> +X
+  528 -> +X
+  572 -> +X
+  556 -> +X
+  570 -> +X
+  594 -> +X
+  659 -> +X
+  647 -> +X
+  657 -> -X
+  657 -> +X
+  620 -> +X
+  24 -> +Y
+  24 -> +X
+  43 -> +X
+  39 -> +X
+  8 -> +X
+  92 -> +Y
+  92 -> +X
+  111 -> +X
+  107 -> +X
+  133 -> +X
+  158 -> +Y
+  158 -> +X
+  177 -> +X
+  173 -> +X
+  199 -> +X
+  224 -> +Y
+  224 -> +X
+  243 -> +X
+  239 -> +X
+  265 -> +X
+  290 -> +Y
+  290 -> +X
+  309 -> +X
+  305 -> +X
+  331 -> +X
+  356 -> +Y
+  356 -> +X
+  375 -> +X
+  371 -> +X
+  397 -> +X
+  422 -> +Y
+  422 -> +X
+  441 -> +X
+  437 -> +X
+  463 -> +X
+  488 -> +Y
+  488 -> +X
+  507 -> +X
+  503 -> +X
+  529 -> +X
+  554 -> +Y
+  554 -> +X
+  573 -> +X
+  569 -> +X
+  595 -> +X
+  645 -> +Y
+  645 -> +X
+  660 -> +X
+  656 -> +X
+  621 -> +X
+  58 -> +Z
+  59 -> +Y
+  37 -> +Y
+  37 -> +X
+  44 -> +X
+  60 -> +X
+  6 -> +X
+  91 -> +Z
+  131 -> +Y
+  105 -> +Y
+  105 -> +X
+  112 -> +X
+  130 -> +X
+  129 -> +X
+  157 -> +Z
+  197 -> +Y
+  171 -> +Y
+  171 -> +X
+  178 -> +X
+  196 -> +X
+  195 -> +X
+  223 -> +Z
+  263 -> +Y
+  237 -> +Y
+  237 -> +X
+  244 -> +X
+  262 -> +X
+  261 -> +X
+  289 -> +Z
+  329 -> +Y
+  303 -> +Y
+  303 -> +X
+  310 -> +X
+  328 -> +X
+  327 -> +X
+  355 -> +Z
+  395 -> +Y
+  369 -> +Y
+  369 -> +X
+  376 -> +X
+  394 -> +X
+  393 -> +X
+  421 -> +Z
+  461 -> +Y
+  435 -> +Y
+  435 -> +X
+  442 -> +X
+  460 -> +X
+  459 -> +X
+  487 -> +Z
+  527 -> +Y
+  501 -> +Y
+  501 -> +X
+  508 -> +X
+  526 -> +X
+  525 -> +X
+  553 -> +Z
+  593 -> +Y
+  567 -> +Y
+  567 -> +X
+  574 -> +X
+  592 -> +X
+  591 -> +X
+  644 -> +Z
+  626 -> +Y
+  654 -> +Y
+  654 -> +X
+  661 -> +X
+  627 -> +X
+  623 -> +X
+  36 -> +X
+  45 -> +X
+  61 -> +X
+  7 -> +X
+  104 -> +X
+  113 -> +X
+  90 -> +X
+  128 -> +X
+  170 -> +X
+  179 -> +X
+  156 -> +X
+  194 -> +X
+  236 -> +X
+  245 -> +X
+  222 -> +X
+  260 -> +X
+  302 -> +X
+  311 -> +X
+  288 -> +X
+  326 -> +X
+  368 -> +X
+  377 -> +X
+  354 -> +X
+  392 -> +X
+  434 -> +X
+  443 -> +X
+  420 -> +X
+  458 -> +X
+  500 -> +X
+  509 -> +X
+  486 -> +X
+  524 -> +X
+  566 -> +X
+  575 -> +X
+  552 -> +X
+  590 -> +X
+  653 -> +X
+  662 -> +X
+  628 -> +X
+  622 -> +X
+  35 -> +X
+  46 -> +X
+  62 -> +X
+  66 -> +X
+  103 -> +X
+  114 -> +X
+  89 -> +X
+  127 -> +X
+  169 -> +X
+  180 -> +X
+  155 -> +X
+  193 -> +X
+  235 -> +X
+  246 -> +X
+  221 -> +X
+  259 -> +X
+  301 -> +X
+  312 -> +X
+  287 -> +X
+  325 -> +X
+  367 -> +X
+  378 -> +X
+  353 -> +X
+  391 -> +X
+  433 -> +X
+  444 -> +X
+  419 -> +X
+  457 -> +X
+  499 -> +X
+  510 -> +X
+  485 -> +X
+  523 -> +X
+  565 -> +X
+  576 -> +X
+  551 -> +X
+  589 -> +X
+  652 -> +X
+  663 -> +X
+  619 -> +X
+  624 -> +X
+  27 -> +Z
+  28 -> +Z
+  29 -> +Z
+  30 -> +Z
+  31 -> +Z
+  32 -> +Z
+  33 -> +Z
+  47 -> +Z
+  48 -> +Z
+  49 -> +Z
+  50 -> +Z
+  51 -> +Z
+  9 -> +Z
+  11 -> +Z
+  12 -> +Z
+  13 -> +Z
+  14 -> +Z
+  15 -> +Z
+  16 -> +Z
+  17 -> +Z
+  18 -> +Z
+  19 -> +Z
+  20 -> +Z
+  21 -> +Z
+  23 -> +Z
+  65 -> +X
+  95 -> +Z
+  96 -> +Z
+  97 -> +Z
+  98 -> +Z
+  99 -> +Z
+  100 -> +Z
+  101 -> +Z
+  115 -> +Z
+  116 -> +Z
+  117 -> +Z
+  118 -> +Z
+  119 -> +Z
+  74 -> +Z
+  76 -> +Z
+  77 -> +Z
+  78 -> +Z
+  79 -> +Z
+  80 -> +Z
+  81 -> +Z
+  82 -> +Z
+  83 -> +Z
+  84 -> +Z
+  85 -> +Z
+  86 -> +Z
+  88 -> +Z
+  126 -> +X
+  161 -> +Z
+  162 -> +Z
+  163 -> +Z
+  164 -> +Z
+  165 -> +Z
+  166 -> +Z
+  167 -> +Z
+  181 -> +Z
+  182 -> +Z
+  183 -> +Z
+  184 -> +Z
+  185 -> +Z
+  140 -> +Z
+  142 -> +Z
+  143 -> +Z
+  144 -> +Z
+  145 -> +Z
+  146 -> +Z
+  147 -> +Z
+  148 -> +Z
+  149 -> +Z
+  150 -> +Z
+  151 -> +Z
+  152 -> +Z
+  154 -> +Z
+  192 -> +X
+  227 -> +Z
+  228 -> +Z
+  229 -> +Z
+  230 -> +Z
+  231 -> +Z
+  232 -> +Z
+  233 -> +Z
+  247 -> +Z
+  248 -> +Z
+  249 -> +Z
+  250 -> +Z
+  251 -> +Z
+  206 -> +Z
+  208 -> +Z
+  209 -> +Z
+  210 -> +Z
+  211 -> +Z
+  212 -> +Z
+  213 -> +Z
+  214 -> +Z
+  215 -> +Z
+  216 -> +Z
+  217 -> +Z
+  218 -> +Z
+  220 -> +Z
+  258 -> +X
+  293 -> +Z
+  294 -> +Z
+  295 -> +Z
+  296 -> +Z
+  297 -> +Z
+  298 -> +Z
+  299 -> +Z
+  313 -> +Z
+  314 -> +Z
+  315 -> +Z
+  316 -> +Z
+  317 -> +Z
+  272 -> +Z
+  274 -> +Z
+  275 -> +Z
+  276 -> +Z
+  277 -> +Z
+  278 -> +Z
+  279 -> +Z
+  280 -> +Z
+  281 -> +Z
+  282 -> +Z
+  283 -> +Z
+  284 -> +Z
+  286 -> +Z
+  324 -> +X
+  359 -> +Z
+  360 -> +Z
+  361 -> +Z
+  362 -> +Z
+  363 -> +Z
+  364 -> +Z
+  365 -> +Z
+  379 -> +Z
+  380 -> +Z
+  381 -> +Z
+  382 -> +Z
+  383 -> +Z
+  338 -> +Z
+  340 -> +Z
+  341 -> +Z
+  342 -> +Z
+  343 -> +Z
+  344 -> +Z
+  345 -> +Z
+  346 -> +Z
+  347 -> +Z
+  348 -> +Z
+  349 -> +Z
+  350 -> +Z
+  352 -> +Z
+  390 -> +X
+  425 -> +Z
+  426 -> +Z
+  427 -> +Z
+  428 -> +Z
+  429 -> +Z
+  430 -> +Z
+  431 -> +Z
+  445 -> +Z
+  446 -> +Z
+  447 -> +Z
+  448 -> +Z
+  449 -> +Z
+  404 -> +Z
+  406 -> +Z
+  407 -> +Z
+  408 -> +Z
+  409 -> +Z
+  410 -> +Z
+  411 -> +Z
+  412 -> +Z
+  413 -> +Z
+  414 -> +Z
+  415 -> +Z
+  416 -> +Z
+  418 -> +Z
+  456 -> +X
+  491 -> +Z
+  492 -> +Z
+  493 -> +Z
+  494 -> +Z
+  495 -> +Z
+  496 -> +Z
+  497 -> +Z
+  511 -> +Z
+  512 -> +Z
+  513 -> +Z
+  514 -> +Z
+  515 -> +Z
+  470 -> +Z
+  472 -> +Z
+  473 -> +Z
+  474 -> +Z
+  475 -> +Z
+  476 -> +Z
+  477 -> +Z
+  478 -> +Z
+  479 -> +Z
+  480 -> +Z
+  481 -> +Z
+  482 -> +Z
+  484 -> +Z
+  522 -> +X
+  557 -> +Z
+  558 -> +Z
+  559 -> +Z
+  560 -> +Z
+  561 -> +Z
+  562 -> +Z
+  563 -> +Z
+  577 -> +Z
+  578 -> +Z
+  579 -> +Z
+  580 -> +Z
+  581 -> +Z
+  536 -> +Z
+  538 -> +Z
+  539 -> +Z
+  540 -> +Z
+  541 -> +Z
+  542 -> +Z
+  543 -> +Z
+  544 -> +Z
+  545 -> +Z
+  546 -> +Z
+  547 -> +Z
+  548 -> +Z
+  550 -> +Z
+  588 -> +X
+  648 -> +Z
+  649 -> +Z
+  650 -> +Z
+  664 -> +Z
+  665 -> +Z
+  666 -> +Z
+  667 -> +Z
+  668 -> +Z
+  669 -> +Z
+  670 -> +Z
+  671 -> +Z
+  672 -> +Z
+  673 -> +Z
+  629 -> +Z
+  631 -> +Z
+  632 -> +Z
+  633 -> +Z
+  634 -> +Z
+  635 -> +Z
+  636 -> +Z
+  637 -> +Z
+  638 -> +Z
+  639 -> +Z
+  640 -> +Z
+  641 -> +Z
+  643 -> +Z
+  625 -> +X
+  5 -> +Y
+  2 -> -Y
+  4 -> +Y
+  63 -> -Y
+  [11, 1, 12] -> +Y
+  64 -> -Y
+  64 -> +Y
+  3 -> +Y
+  71 -> +Y
+  73 -> +Y
+  70 -> +Y
+  [11, 4, 12] -> +Y
+  69 -> +Y
+  72 -> +Y
+  137 -> +Y
+  139 -> +Y
+  136 -> +Y
+  [11, 7, 12] -> +Y
+  135 -> +Y
+  138 -> +Y
+  203 -> +Y
+  205 -> +Y
+  202 -> +Y
+  [11, 10, 12] -> +Y
+  201 -> +Y
+  204 -> +Y
+  269 -> +Y
+  271 -> +Y
+  268 -> +Y
+  [11, 13, 12] -> +Y
+  267 -> +Y
+  270 -> +Y
+  335 -> +Y
+  337 -> +Y
+  334 -> +Y
+  [11, 16, 12] -> +Y
+  333 -> +Y
+  336 -> +Y
+  401 -> +Y
+  403 -> +Y
+  400 -> +Y
+  [11, 19, 12] -> +Y
+  399 -> +Y
+  402 -> +Y
+  467 -> +Y
+  469 -> +Y
+  466 -> +Y
+  [11, 22, 12] -> +Y
+  465 -> +Y
+  468 -> +Y
+  533 -> +Y
+  535 -> +Y
+  532 -> +Y
+  [11, 25, 12] -> +Y
+  531 -> +Y
+  534 -> +Y
+  616 -> +Y
+  618 -> +Y
+  615 -> +Y
+  [11, 28, 12] -> +Y
+  612 -> +Y
+  617 -> +Y
+  677 -> -Z
+  604 -> -Z
+  604 -> +Z
+  607 -> +Z
+  610 -> +Z
+  603 -> +Z
+  605 -> +Z
+  614 -> +Z
+  611 -> +Z
+  606 -> +Z
+  608 -> +Z
+  609 -> +Z
+  branch cz0 {
+    false {
+      679: XZX [10, 1, 12] <cz_target_0_off>
+      680: XXZ [11, 1, 12] <cz_q_contact_0>
+      22 -> +Z
+      679 -> +Z
+    }
+    true {
+      681: ZXZ [10, 1, 12] <cz_target_0_on>
+      682: XXZ [11, 1, 12] <cz_q_contact_0>
+      22 -H> +Z
+      681 -H> +Z
+      681 -> +X
+    }
+  }
+  branch cz1 {
+    false {
+      683: XZX [10, 4, 12] <cz_target_1_off>
+      684: XXZ [11, 4, 12] <cz_q_contact_1>
+      87 -> +Z
+      683 -> +Z
+    }
+    true {
+      685: ZXZ [10, 4, 12] <cz_target_1_on>
+      686: XXZ [11, 4, 12] <cz_q_contact_1>
+      87 -H> +Z
+      685 -H> +Z
+      685 -> +X
+    }
+  }
+  branch cz2 {
+    false {
+      687: XZX [10, 7, 12] <cz_target_2_off>
+      688: XXZ [11, 7, 12] <cz_q_contact_2>
+      153 -> +Z
+      687 -> +Z
+    }
+    true {
+      689: ZXZ [10, 7, 12] <cz_target_2_on>
+      690: XXZ [11, 7, 12] <cz_q_contact_2>
+      153 -H> +Z
+      689 -H> +Z
+      689 -> +X
+    }
+  }
+  branch cz3 {
+    false {
+      691: XZX [10, 10, 12] <cz_target_3_off>
+      692: XXZ [11, 10, 12] <cz_q_contact_3>
+      219 -> +Z
+      691 -> +Z
+    }
+    true {
+      693: ZXZ [10, 10, 12] <cz_target_3_on>
+      694: XXZ [11, 10, 12] <cz_q_contact_3>
+      219 -H> +Z
+      693 -H> +Z
+      693 -> +X
+    }
+  }
+  branch cz4 {
+    false {
+      695: XZX [10, 13, 12] <cz_target_4_off>
+      696: XXZ [11, 13, 12] <cz_q_contact_4>
+      285 -> +Z
+      695 -> +Z
+    }
+    true {
+      697: ZXZ [10, 13, 12] <cz_target_4_on>
+      698: XXZ [11, 13, 12] <cz_q_contact_4>
+      285 -H> +Z
+      697 -H> +Z
+      697 -> +X
+    }
+  }
+  branch cz5 {
+    false {
+      699: XZX [10, 16, 12] <cz_target_5_off>
+      700: XXZ [11, 16, 12] <cz_q_contact_5>
+      351 -> +Z
+      699 -> +Z
+    }
+    true {
+      701: ZXZ [10, 16, 12] <cz_target_5_on>
+      702: XXZ [11, 16, 12] <cz_q_contact_5>
+      351 -H> +Z
+      701 -H> +Z
+      701 -> +X
+    }
+  }
+  branch cz6 {
+    false {
+      703: XZX [10, 19, 12] <cz_target_6_off>
+      704: XXZ [11, 19, 12] <cz_q_contact_6>
+      417 -> +Z
+      703 -> +Z
+    }
+    true {
+      705: ZXZ [10, 19, 12] <cz_target_6_on>
+      706: XXZ [11, 19, 12] <cz_q_contact_6>
+      417 -H> +Z
+      705 -H> +Z
+      705 -> +X
+    }
+  }
+  branch cz7 {
+    false {
+      707: XZX [10, 22, 12] <cz_target_7_off>
+      708: XXZ [11, 22, 12] <cz_q_contact_7>
+      483 -> +Z
+      707 -> +Z
+    }
+    true {
+      709: ZXZ [10, 22, 12] <cz_target_7_on>
+      710: XXZ [11, 22, 12] <cz_q_contact_7>
+      483 -H> +Z
+      709 -H> +Z
+      709 -> +X
+    }
+  }
+  branch cz8 {
+    false {
+      711: XZX [10, 25, 12] <cz_target_8_off>
+      712: XXZ [11, 25, 12] <cz_q_contact_8>
+      549 -> +Z
+      711 -> +Z
+    }
+    true {
+      713: ZXZ [10, 25, 12] <cz_target_8_on>
+      714: XXZ [11, 25, 12] <cz_q_contact_8>
+      549 -H> +Z
+      713 -H> +Z
+      713 -> +X
+    }
+  }
+  branch cz9 {
+    false {
+      715: XZX [10, 28, 12] <cz_target_9_off>
+      716: XXZ [11, 28, 12] <cz_q_contact_9>
+      642 -> +Z
+      715 -> +Z
+    }
+    true {
+      717: ZXZ [10, 28, 12] <cz_target_9_on>
+      718: XXZ [11, 28, 12] <cz_q_contact_9>
+      642 -H> +Z
+      717 -H> +Z
+      717 -> +X
+    }
+  }
+
+  resolve cz0 if bit0_uma.erase
+  resolve cz1 if bit1_uma.erase
+  resolve cz2 if bit2_uma.erase
+  resolve cz3 if bit3_uma.erase
+  resolve cz4 if bit4_uma.erase
+  resolve cz5 if bit5_uma.erase
+  resolve cz6 if bit6_uma.erase
+  resolve cz7 if bit7_uma.erase
+  resolve cz8 if bit8_uma.erase
+  resolve cz9 if bit9_tail.m_ikprime
+
+  bit0_and.qi_k -> 0
+  0 -> bit0_maj.i_prime_k
+  bit0_maj.c_k_plus_1_duplicate -> bit0_uma.c_k_plus_1
+  bit0_maj.c_k_xor_i_prime_k -> bit0_uma.i_prime_k
+  bit0_maj.c_k_xor_t_k -H> bit0_uma.t_k
+  67 -> bit0_and.q
+  26 -> bit0_and.i_k
+  40 -> bit0_maj.t_k
+  bit0_uma.out_k -> 42
+  52 -> bit0_and.ccz_2
+  53 -> bit0_and.ccz_0
+  54 -> bit0_and.ccz_1
+  55 -> bit0_maj.ccz_1
+  56 -> bit0_maj.ccz_3
+  57 -> bit0_maj.ccz_2
+  bit1_and.qi_k -> 68
+  68 -> bit1_maj.i_prime_k
+  bit1_maj.c_k_plus_1_duplicate -> bit1_uma.c_k_plus_1
+  bit1_maj.c_k_xor_i_prime_k -> bit1_uma.c_k_xor_i_prime_k
+  bit1_maj.c_k_xor_t_k -H> bit1_uma.c_k_xor_t_k
+  bit1_maj.c_k_out -H> bit1_uma.c_k
+  132 -> bit1_and.q
+  94 -> bit1_and.i_k
+  108 -> bit1_maj.t_k
+  bit1_uma.out_k -> 110
+  120 -> bit1_and.ccz_2
+  121 -> bit1_and.ccz_0
+  122 -> bit1_and.ccz_1
+  123 -> bit1_maj.ccz_1
+  124 -> bit1_maj.ccz_3
+  125 -> bit1_maj.ccz_2
+  bit0_maj.c_k_plus_1 -> bit1_maj.c_k
+  bit2_and.qi_k -> 134
+  134 -> bit2_maj.i_prime_k
+  bit2_maj.c_k_plus_1_duplicate -> bit2_uma.c_k_plus_1
+  bit2_maj.c_k_xor_i_prime_k -> bit2_uma.c_k_xor_i_prime_k
+  bit2_maj.c_k_xor_t_k -H> bit2_uma.c_k_xor_t_k
+  bit2_maj.c_k_out -H> bit2_uma.c_k
+  198 -> bit2_and.q
+  160 -> bit2_and.i_k
+  174 -> bit2_maj.t_k
+  bit2_uma.out_k -> 176
+  186 -> bit2_and.ccz_2
+  187 -> bit2_and.ccz_0
+  188 -> bit2_and.ccz_1
+  189 -> bit2_maj.ccz_1
+  190 -> bit2_maj.ccz_3
+  191 -> bit2_maj.ccz_2
+  bit1_maj.c_k_plus_1 -> bit2_maj.c_k
+  bit3_and.qi_k -> 200
+  200 -> bit3_maj.i_prime_k
+  bit3_maj.c_k_plus_1_duplicate -> bit3_uma.c_k_plus_1
+  bit3_maj.c_k_xor_i_prime_k -> bit3_uma.c_k_xor_i_prime_k
+  bit3_maj.c_k_xor_t_k -H> bit3_uma.c_k_xor_t_k
+  bit3_maj.c_k_out -H> bit3_uma.c_k
+  264 -> bit3_and.q
+  226 -> bit3_and.i_k
+  240 -> bit3_maj.t_k
+  bit3_uma.out_k -> 242
+  252 -> bit3_and.ccz_2
+  253 -> bit3_and.ccz_0
+  254 -> bit3_and.ccz_1
+  255 -> bit3_maj.ccz_1
+  256 -> bit3_maj.ccz_3
+  257 -> bit3_maj.ccz_2
+  bit2_maj.c_k_plus_1 -> bit3_maj.c_k
+  bit4_and.qi_k -> 266
+  266 -> bit4_maj.i_prime_k
+  bit4_maj.c_k_plus_1_duplicate -> bit4_uma.c_k_plus_1
+  bit4_maj.c_k_xor_i_prime_k -> bit4_uma.c_k_xor_i_prime_k
+  bit4_maj.c_k_xor_t_k -H> bit4_uma.c_k_xor_t_k
+  bit4_maj.c_k_out -H> bit4_uma.c_k
+  330 -> bit4_and.q
+  292 -> bit4_and.i_k
+  306 -> bit4_maj.t_k
+  bit4_uma.out_k -> 308
+  318 -> bit4_and.ccz_2
+  319 -> bit4_and.ccz_0
+  320 -> bit4_and.ccz_1
+  321 -> bit4_maj.ccz_1
+  322 -> bit4_maj.ccz_3
+  323 -> bit4_maj.ccz_2
+  bit3_maj.c_k_plus_1 -> bit4_maj.c_k
+  bit5_and.qi_k -> 332
+  332 -> bit5_maj.i_prime_k
+  bit5_maj.c_k_plus_1_duplicate -> bit5_uma.c_k_plus_1
+  bit5_maj.c_k_xor_i_prime_k -> bit5_uma.c_k_xor_i_prime_k
+  bit5_maj.c_k_xor_t_k -H> bit5_uma.c_k_xor_t_k
+  bit5_maj.c_k_out -H> bit5_uma.c_k
+  396 -> bit5_and.q
+  358 -> bit5_and.i_k
+  372 -> bit5_maj.t_k
+  bit5_uma.out_k -> 374
+  384 -> bit5_and.ccz_2
+  385 -> bit5_and.ccz_0
+  386 -> bit5_and.ccz_1
+  387 -> bit5_maj.ccz_1
+  388 -> bit5_maj.ccz_3
+  389 -> bit5_maj.ccz_2
+  bit4_maj.c_k_plus_1 -> bit5_maj.c_k
+  bit6_and.qi_k -> 398
+  398 -> bit6_maj.i_prime_k
+  bit6_maj.c_k_plus_1_duplicate -> bit6_uma.c_k_plus_1
+  bit6_maj.c_k_xor_i_prime_k -> bit6_uma.c_k_xor_i_prime_k
+  bit6_maj.c_k_xor_t_k -H> bit6_uma.c_k_xor_t_k
+  bit6_maj.c_k_out -H> bit6_uma.c_k
+  462 -> bit6_and.q
+  424 -> bit6_and.i_k
+  438 -> bit6_maj.t_k
+  bit6_uma.out_k -> 440
+  450 -> bit6_and.ccz_2
+  451 -> bit6_and.ccz_0
+  452 -> bit6_and.ccz_1
+  453 -> bit6_maj.ccz_1
+  454 -> bit6_maj.ccz_3
+  455 -> bit6_maj.ccz_2
+  bit5_maj.c_k_plus_1 -> bit6_maj.c_k
+  bit7_and.qi_k -> 464
+  464 -> bit7_maj.i_prime_k
+  bit7_maj.c_k_plus_1_duplicate -> bit7_uma.c_k_plus_1
+  bit7_maj.c_k_xor_i_prime_k -> bit7_uma.c_k_xor_i_prime_k
+  bit7_maj.c_k_xor_t_k -H> bit7_uma.c_k_xor_t_k
+  bit7_maj.c_k_out -H> bit7_uma.c_k
+  528 -> bit7_and.q
+  490 -> bit7_and.i_k
+  504 -> bit7_maj.t_k
+  bit7_uma.out_k -> 506
+  516 -> bit7_and.ccz_2
+  517 -> bit7_and.ccz_0
+  518 -> bit7_and.ccz_1
+  519 -> bit7_maj.ccz_1
+  520 -> bit7_maj.ccz_3
+  521 -> bit7_maj.ccz_2
+  bit6_maj.c_k_plus_1 -> bit7_maj.c_k
+  bit8_and.qi_k -> 530
+  530 -> bit8_maj.i_prime_k
+  bit8_maj.c_k_plus_1_duplicate -> bit8_uma.c_k_plus_1
+  bit8_maj.c_k_xor_i_prime_k -> bit8_uma.c_k_xor_i_prime_k
+  bit8_maj.c_k_xor_t_k -H> bit8_uma.c_k_xor_t_k
+  bit8_maj.c_k_out -H> bit8_uma.c_k
+  594 -> bit8_and.q
+  556 -> bit8_and.i_k
+  570 -> bit8_maj.t_k
+  bit8_uma.out_k -> 572
+  582 -> bit8_and.ccz_2
+  583 -> bit8_and.ccz_0
+  584 -> bit8_and.ccz_1
+  585 -> bit8_maj.ccz_1
+  586 -> bit8_maj.ccz_3
+  587 -> bit8_maj.ccz_2
+  bit7_maj.c_k_plus_1 -> bit8_maj.c_k
+  597 -> bit9_tail.t_k
+  bit9_tail.out_k -> 598
+  bit9_and.qi_k -> 602
+  602 -> bit9_tail.i_prime_k
+  620 -> bit9_and.q
+  647 -> bit9_and.i_k
+  674 -> bit9_and.ccz_2
+  675 -> bit9_and.ccz_0
+  676 -> bit9_and.ccz_1
+  bit8_maj.c_k_plus_1 -> bit9_tail.c_k
+  bit1_uma.carry_z => bit0_uma.incoming_z
+  bit2_uma.carry_z => bit1_uma.incoming_z
+  bit3_uma.carry_z => bit2_uma.incoming_z
+  bit4_uma.carry_z => bit3_uma.incoming_z
+  bit5_uma.carry_z => bit4_uma.incoming_z
+  bit6_uma.carry_z => bit5_uma.incoming_z
+  bit7_uma.carry_z => bit6_uma.incoming_z
+  bit8_uma.carry_z => bit7_uma.incoming_z
+  bit9_tail.m_ikprime => bit8_uma.incoming_z
+}

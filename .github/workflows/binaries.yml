@@ -1,0 +1,103 @@
+name: Binaries
+
+# Attaches prebuilt `bloq` (CLI) and `bloq_editor` (Bevy app) archives to the
+# GitHub release that release-plz publishes. Triggered by `release published`
+# rather than tag push so the release object is guaranteed to exist — note
+# this only fires if release-plz runs with RELEASE_PLZ_TOKEN (default
+# GITHUB_TOKEN events trigger no workflows; see release-plz.yml).
+#
+# Caveats accepted for now:
+#   - Linux builds on ubuntu-22.04 for an older glibc floor; runtime still
+#     needs system ALSA/udev/Vulkan drivers (normal for Bevy apps).
+#   - macOS/Windows binaries are unsigned (Gatekeeper/SmartScreen warnings);
+#     signing is a separate chore if it ever matters.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to attach binaries to (e.g. v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  upload:
+    name: ${{ matrix.target }}
+    if: github.repository == 'inmzhang/bloq' && vars.RELEASE_PUBLISH_ENABLED == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      TAR_OPTIONS: --owner=0 --group=0 --numeric-owner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libasound2-dev libudev-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Install Python for release packaging
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --target ${{ matrix.target }}
+
+      - name: Remap native build paths
+        run: python tools/release_build.py --github-env
+
+      - name: Upload bloq CLI
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: bloq
+          package: bloq-cli
+          include: LICENSE,THIRD-PARTY-NOTICES.txt
+          target: ${{ matrix.target }}
+          locked: true
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload bloq_editor
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: bloq_editor
+          include: LICENSE,THIRD-PARTY-NOTICES.txt,bloq_editor/assets/fonts/NOTICE.md,bloq_editor/assets/fonts/LICENSE-ZED-IOSEVKA.md,bloq_editor/assets/fonts/LICENSE-NERD-FONTS.txt,bloq_editor/assets/fonts/LICENSE-FONT-AWESOME.txt,bloq_editor/assets/fonts/LICENSE-FANTASQUE.md
+          target: ${{ matrix.target }}
+          locked: true
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package editor desktop application
+        if: runner.os != 'Windows'
+        run: python3 bloq_editor/desktop/package.py build target/${{ matrix.target }}/release/bloq_editor ${{ matrix.target }}
+
+      - name: Upload editor desktop application
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$RELEASE_TAG" target/desktop/* --clobber
