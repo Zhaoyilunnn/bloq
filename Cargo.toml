@@ -10,6 +10,7 @@ members = [
   "bloq_ir",
   "bloq_compile",
   "bloq_vm",
+  "bloq_qir",
   "bloq_stim",
   "bloq_test",
   "bloq_py",
@@ -45,6 +46,7 @@ bloq_graph = { path = "bloq_graph", version = "=0.1.1" }
 bloq_ir = { path = "bloq_ir", version = "=0.1.1" }
 bloq_stim = { path = "bloq_stim", version = "=0.1.1" }
 bloq_vm = { path = "bloq_vm", version = "=0.1.1" }
+bloq_qir = { path = "bloq_qir", version = "=0.1.1" }
 # Deliberately version-less: bloq_test is dev-only and unpublished; cargo
 # strips path-only dev-deps from published manifests, keeping it private.
 bloq_test = { path = "bloq_test" }

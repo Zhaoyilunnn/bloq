@@ -22,6 +22,8 @@ verify = ["bloq_stim/verify"]
 graph-verify = ["bloq_graph/verify"]
 # Bloq IR execution, dynamic emulation, and physical verification.
 vm = ["dep:bloq_vm", "dep:serde_json"]
+# Standard Adaptive QIR emission with LLVM 21 tools at runtime.
+qir = ["dep:bloq_qir"]
 # Opt-in profiling for the compiler pipeline.
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath-alloc"]
@@ -31,6 +33,7 @@ bloq_circuit.workspace = true
 bloq_compile.workspace = true
 bloq_graph.workspace = true
 bloq_ir.workspace = true
+bloq_qir = { workspace = true, optional = true }
 bloq_stim.workspace = true
 bloq_vm = { workspace = true, optional = true }
 bloq_utils.workspace = true

@@ -44,6 +44,8 @@ pub use bloq_circuit as circuit;
 pub use bloq_compile as compile;
 pub use bloq_graph as graph;
 pub use bloq_ir as ir;
+#[cfg(feature = "qir")]
+pub use bloq_qir as qir;
 pub use bloq_stim as stim;
 pub use bloq_utils as utils;
 #[cfg(feature = "vm")]
