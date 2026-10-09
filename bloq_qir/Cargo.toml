@@ -1,0 +1,24 @@
+[package]
+name = "bloq_qir"
+version.workspace = true
+description = "Adaptive QIR emission for lowered Bloq programs."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+bloq_vm.workspace = true
+bloq_ir.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bloq_compile = { path = "../bloq_compile" }
+bloq_graph = { path = "../bloq_graph" }
+bloq_stim = { path = "../bloq_stim" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
