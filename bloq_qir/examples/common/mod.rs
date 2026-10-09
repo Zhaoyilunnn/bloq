@@ -274,6 +274,52 @@ pub(crate) fn repetition(error: u32) -> (Program, QirOptions) {
     (program, options)
 }
 
+pub(crate) fn conditional_wait(active: bool, rus: bool) -> (Program, QirOptions) {
+    let (mut program, mut options) = repetition(1);
+    program.tasks.push(task(
+        Instruction::Eval(if active {
+            BoolOp::Copy(0)
+        } else {
+            BoolOp::Not(Box::new(BoolOp::Copy(0)))
+        }),
+        &[1],
+        Some(4),
+    ));
+    program.tasks[5].activation = Some(4);
+    program.tasks[5].dependencies = Box::new([0, 7]);
+    if rus {
+        program.tasks[5].instruction = Instruction::Rus {
+            body: Stream::default(),
+            restart: BoolOp::Const(false),
+            owned_qubits: Box::new([]),
+            attempt_bits: Box::new([]),
+            attempt_records: Box::new([]),
+            resource: 0,
+            retry_prepare: QuantumStream::default(),
+            decoder_hold: Box::new([]),
+            cultivation_exits: Box::new([]),
+        };
+    }
+    let mut repeated = program.tasks[3].clone();
+    repeated.dependencies = Box::new([5]);
+    repeated.output = Some(5);
+    program.tasks.push(repeated);
+    program.bit_count = 6;
+    program.entry.tasks = (0..9).collect();
+    options.output_bits.push(5);
+    (program, options)
+}
+
+pub(crate) fn decoder_publication() -> (Program, QirOptions) {
+    let (mut program, options) = conditional_wait(true, false);
+    program
+        .tasks
+        .push(task(Instruction::Eval(BoolOp::Const(false)), &[5], Some(3)));
+    program.tasks[6].dependencies = Box::new([3, 4, 5, 9]);
+    program.entry.tasks = (0..10).collect();
+    (program, options)
+}
+
 pub(crate) fn retry() -> (Program, QirOptions) {
     let mut body = task(
         quantum(vec![

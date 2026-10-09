@@ -616,7 +616,12 @@ pub fn run(program: &Program, config: RuntimeConfig) -> Result<RunResult, Runtim
     causal::run(program, config)
 }
 
-fn validate_program(program: &Program) -> Result<(), RuntimeError> {
+/// Validate task operands, register bounds and RUS isolation without execution.
+///
+/// # Errors
+///
+/// Returns a program or identifier error for malformed input.
+pub fn validate_program(program: &Program) -> Result<(), RuntimeError> {
     let tasks = program.tasks.len();
     if let Some(last_task) = tasks.checked_sub(1) {
         u32::try_from(last_task).map_err(|_| RuntimeError::IdOverflow("task"))?;

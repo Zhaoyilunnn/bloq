@@ -5,7 +5,8 @@
 feature. Install LLVM 21's `opt-21` and `llvm-as-21` to emit; ordinary Rust builds
 and the default facade do not link LLVM or require those executables.
 
-The emitter constructs private classical registers, promotes them to SSA with
+The emitter validates task operands and RUS isolation using the VM validator.
+It constructs private classical registers, promotes them to SSA with
 LLVM's `mem2reg`, verifies the module, and assembles bitcode. Both outputs use
 an `i64` entry point, static resources, declared integer/loop/return capabilities,
 and terminal Boolean output records with constant labels. Output ordering follows
@@ -20,13 +21,13 @@ raw classical readout to export:
 ```rust
 use bloq::{graph::GalleryItem, qir::{QirOptions, emit_program_qir}, vm};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> bloq::Result<()> {
     let ir = bloq::compile::compile(&GalleryItem::XMemory.build(), 3)?;
     let program = vm::lower(&ir, &vm::LoweringConfig::default())?;
     let raw = program.tasks.iter().find_map(|task| {
         matches!(task.instruction, vm::instruction::Instruction::Observable { .. })
             .then_some(task.output).flatten()
-    }).ok_or("memory has no observable")?;
+    }).ok_or_else(|| std::io::Error::other("memory has no observable"))?;
     let options = QirOptions { output_bits: vec![raw], ..QirOptions::default() };
     let artifact = emit_program_qir(&program, &options)?;
     std::fs::write("memory.ll", artifact.llvm_ir)?;
@@ -56,6 +57,7 @@ contain up to 64 bits, with the first parity in the least-significant position.
 The target model must use exactly that bit order and complete window length.
 Corrected and Flip requests for one observable share one submission and one
 consumed correction mask. Corrected is raw XOR the selected flip.
+The emitter masks the selected bit before converting it to a Boolean.
 
 `decoder_ready_ui64` is nonblocking and non-consuming. A result is ready only
 when an unread correction exists and that session has no outstanding work.
@@ -67,6 +69,12 @@ readiness loop with the authored protection circuits as its body. It completes
 an in-flight round before checking readiness again. The compiler assigns device
 operation timing. Protection-round exhaustion returns code 2 rather than an
 accepted logical output.
+
+A false activation skips the protection wait without discarding pending decoder
+requests. Later consumers retrieve the result. A completed solve retains its
+correction across branch joins, so subsequent requests for the same observable
+do not consume the decoder result again. Conditional RUS entry follows the same
+rule for decoder work submitted before the branch.
 
 ## Supported execution
 
@@ -112,10 +120,12 @@ a Python interpreter with the simulator's QEC and Aer extras. Run registered
 CTest `integration.bloq`.
 
 That test invokes the Rust exporter and consumes its verified text and bitcode.
-It checks actual Bloq-compiled d3 memory against an independent Stim/PyMatching
+It checks Bloq-compiled d3 memory against an independent Stim and PyMatching
 reference, all three single-error repetition-code corrections, extra protection
 measurements during long decoder latency, one solve for paired decoder outputs,
-S/T numerical execution, signed QND products, early-restart evaluation,
-retry and wait exhaustion, and
-program exit-status reporting. Generated modules, traces and targets live in a
-temporary directory.
+numerical execution of S and T gates, signed QND products, early-restart
+evaluation, retry and wait exhaustion, and program exit-status reporting.
+Decoder regressions cover both activation paths for conditional waits and RUS
+entry, repeated observable queries, output reassignment and multibit masks.
+The required QIR CI job runs this compiler-to-simulator test.
+Generated modules, traces and targets live in a temporary directory.

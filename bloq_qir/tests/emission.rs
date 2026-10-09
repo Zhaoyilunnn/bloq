@@ -5,6 +5,43 @@ use bloq_qir::{QirEmissionError, QirOptions, emit_program_qir};
 use bloq_vm::instruction::*;
 
 #[test]
+fn conditional_decoder_completion_has_valid_ssa_on_both_paths() {
+    for active in [false, true] {
+        for rus in [false, true] {
+            let (program, options) = common::conditional_wait(active, rus);
+            emit_program_qir(&program, &options).expect("conditional completion and reuse");
+        }
+    }
+}
+
+#[test]
+fn correction_selection_does_not_narrow_the_integer_mask() {
+    let (program, mut options) = common::repetition(1);
+    for bit in [0, 1, 63] {
+        options.decoders[0].correction_count = 64;
+        options.decoders[0].correction_bit = bit;
+        let artifact = emit_program_qir(&program, &options).expect("emit mask selection");
+        assert!(artifact.llvm_ir.contains("and i64"));
+        assert!(artifact.llvm_ir.contains("icmp ne i64"));
+        assert!(!artifact.llvm_ir.contains("trunc i64"));
+    }
+}
+
+#[test]
+fn qir_reuses_vm_validation_for_rus_isolation() {
+    let (mut program, options) = common::retry();
+    let Instruction::Rus { owned_qubits, .. } = &mut program.tasks[0].instruction else {
+        panic!("RUS fixture")
+    };
+    *owned_qubits = Box::new([]);
+    assert!(bloq_vm::runtime::validate_program(&program).is_err());
+    assert!(matches!(
+        emit_program_qir(&program, &options),
+        Err(QirEmissionError::InvalidProgram(message)) if message.contains("isolated source")
+    ));
+}
+
+#[test]
 fn native_llvm_verifies_feedback_phase_retry_and_decoder_loops() {
     for (program, options) in [
         common::feedback(),
@@ -13,6 +50,7 @@ fn native_llvm_verifies_feedback_phase_retry_and_decoder_loops() {
         common::repetition(1),
         common::products(),
         common::early_retry(),
+        common::decoder_publication(),
     ] {
         let artifact =
             emit_program_qir(&program, &options).expect("verify SSA and assemble bitcode");

@@ -20,6 +20,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("early-retry".to_owned(), common::early_retry(), "stim"),
     ];
     cases.push(("products".to_owned(), common::products(), "aer"));
+    cases.push((
+        "conditional-overwrite".to_owned(),
+        common::decoder_publication(),
+        "stim",
+    ));
+    for active in [false, true] {
+        for rus in [false, true] {
+            let boundary = if rus { "rus" } else { "wait" };
+            cases.push((
+                format!("conditional-{boundary}-{active}"),
+                common::conditional_wait(active, rus),
+                "stim",
+            ));
+        }
+    }
+    for bit in 0..3 {
+        let (mut program, mut options) = common::repetition(1);
+        program.entry.tasks = (0..6).collect();
+        options.decoders[0].correction_bit = bit;
+        options.output_records = vec![0, 1];
+        cases.push((format!("mask-bit-{bit}"), (program, options), "stim"));
+    }
     let (mut rejected, mut retry_options) = common::retry();
     if let Instruction::Rus { restart, .. } = &mut rejected.tasks[0].instruction {
         *restart = BoolOp::Const(true);
@@ -65,6 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[observable],
         Some(corrected),
     ));
+    program.task_origins.push(TaskOrigin {
+        function: TaskFunction::Classical,
+        ..TaskOrigin::default()
+    });
     program.entry.tasks = program
         .entry
         .tasks

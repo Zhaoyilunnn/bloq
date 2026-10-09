@@ -4,9 +4,11 @@ Compilation produces Bloq IR. An **emitter** translates that program into what
 a particular backend executes. Bloq provides:
 
 - a **static** emitter that writes one Stim circuit for a program without
-  runtime control, and
+  runtime control;
 - the **Bloq VM**, a simple verification simulator for adaptive choices,
-  mock decoder queries, retries, and waiting.
+  mock decoder queries, retries, and waiting; and
+- the [Adaptive QIR emitter](qir.md), which exports VM programs for quantum
+  controllers with classical feedback and external decoding.
 
 ```{mermaid}
 flowchart LR
@@ -181,4 +183,5 @@ They are not hardware-controller instructions.
 :maxdepth: 1
 
 VM Verification <vm>
+Adaptive QIR <qir>
 ```

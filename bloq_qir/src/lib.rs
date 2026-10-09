@@ -5,6 +5,7 @@
 //! durations are assigned downstream; nonzero source releases and explicit
 //! idle intervals are rejected. LLVM 21 tools promote private construction
 //! registers to SSA and verify the final module before returning text/bitcode.
+mod decoder_abi;
 mod emit;
 mod quantum;
 
@@ -112,7 +113,15 @@ pub fn emit_program_qir(
 struct PendingSolve {
     binding: DecoderBinding,
     raw: String,
-    tasks: Vec<TaskId>,
+    tasks: Vec<PendingDecode>,
+    consumed: String,
+    flip: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingDecode {
+    task: TaskId,
+    published: String,
 }
 
 fn invalid(message: impl Into<String>) -> QirEmissionError {

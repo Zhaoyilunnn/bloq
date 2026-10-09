@@ -7,7 +7,9 @@ use bloq_vm::instruction::{
     BitId, BoolOp, Instruction, MemoryCycle, Program, QuantumStream, RecordParity, Stream, TaskId,
 };
 
-use crate::{PendingSolve, QirArtifact, QirEmissionError, QirOptions, invalid, unsupported};
+use crate::{
+    PendingDecode, PendingSolve, QirArtifact, QirEmissionError, QirOptions, invalid, unsupported,
+};
 
 type Result<T> = std::result::Result<T, QirEmissionError>;
 
@@ -25,6 +27,7 @@ pub(super) struct Emitter<'a> {
 }
 
 pub(super) fn emit(program: &Program, options: &QirOptions) -> Result<QirArtifact> {
+    bloq_vm::runtime::validate_program(program).map_err(|error| invalid(error.to_string()))?;
     if !program.inputs.is_empty() || !program.outputs.is_empty() {
         return Err(unsupported(
             "logical patch I/O requires authored preparation and terminal readout",
@@ -107,6 +110,7 @@ pub(super) fn emit(program: &Program, options: &QirOptions) -> Result<QirArtifac
         .ok_or_else(|| invalid("qubit count overflow"))?;
     e.code.push_str(&format!("attributes #0 = {{ \"entry_point\" \"qir_profiles\"=\"adaptive_profile\" \"output_labeling_schema\"=\"ordered\" \"required_num_qubits\"=\"{qubits}\" \"required_num_results\"=\"{}\" }}\n", e.results));
     e.code.push_str(DECLARATIONS);
+    e.code.push_str(crate::decoder_abi::DECLARATIONS);
     e.code.push_str("attributes #1 = { \"irreversible\" }\n!llvm.module.flags = !{!0, !1, !2, !3, !4, !6, !7}\n!0 = !{i32 1, !\"qir_major_version\", i32 2}\n!1 = !{i32 7, !\"qir_minor_version\", i32 1}\n!2 = !{i32 1, !\"dynamic_qubit_management\", i1 false}\n!3 = !{i32 1, !\"dynamic_result_management\", i1 false}\n!4 = !{i32 5, !\"int_computations\", !5}\n!5 = !{!\"i1\", !\"i32\", !\"i64\"}\n!6 = !{i32 1, !\"backwards_branching\", i2 2}\n!7 = !{i32 1, !\"multiple_return_points\", i1 true}\n");
     let llvm_ir = String::from_utf8(tool(
         &options.optimizer,
@@ -325,6 +329,12 @@ impl Emitter<'_> {
                         }
                     }
                 }
+                let branch_state = (task.activation.is_some()
+                    && matches!(
+                        task.instruction,
+                        Instruction::WaitFor { .. } | Instruction::Rus { .. }
+                    ))
+                .then(|| (self.done.clone(), self.pending.clone(), self.cached.clone()));
                 if let Some(gate) = task.activation {
                     let active = self.read('b', gate)?;
                     self.line(format!("br i1 {active}, label %{execute}, label %{skip}"));
@@ -347,9 +357,13 @@ impl Emitter<'_> {
                     if let Some(output) = task.output {
                         self.write('b', output, "false")?;
                     }
-                    // A pending decoder cannot cross an activation branch.
                     self.line(format!("br label %{join}"));
                     self.block(&join);
+                }
+                if let Some((done, pending, cached)) = branch_state {
+                    self.done = done;
+                    self.pending = pending;
+                    self.cached = cached;
                 }
                 if !matches!(task.instruction, Instruction::Decode(_))
                     || self
@@ -421,9 +435,14 @@ impl Emitter<'_> {
                     } else {
                         self.value(format!("xor i1 {raw}, {flip}"))
                     });
-                } else if let Some(pending) = self.pending.get_mut(&request.observable) {
+                } else if let Some(pending) = self.pending.get(&request.observable) {
                     let previous_raw = pending.raw.clone();
-                    pending.tasks.push(id);
+                    let task = self.pending_decode(id);
+                    self.pending
+                        .get_mut(&request.observable)
+                        .expect("pending solve")
+                        .tasks
+                        .push(task);
                     let equal = self.value(format!("icmp eq i1 {raw}, {previous_raw}"));
                     self.check(&equal);
                 } else {
@@ -448,10 +467,7 @@ impl Emitter<'_> {
                             "overlapping solves on the same decoder session",
                         ));
                     }
-                    self.line(format!(
-                        "call void @reset_decoder_ui64(i64 {})",
-                        binding.decoder
-                    ));
+                    self.decoder_reset(binding.decoder);
                     for (chunk_index, chunk) in binding.syndrome.chunks(64).enumerate() {
                         let mut packed = "0".to_owned();
                         for (shift, parity) in chunk.iter().enumerate() {
@@ -460,19 +476,23 @@ impl Emitter<'_> {
                             let shifted = self.value(format!("shl i64 {wide}, {shift}"));
                             packed = self.value(format!("or i64 {packed}, {shifted}"));
                         }
-                        self.line(format!("call void @enqueue_syndromes_ui64(i64 {}, i64 {}, i64 {packed}, i64 {chunk_index})", binding.decoder, chunk.len()));
+                        self.decoder_enqueue(binding.decoder, chunk.len(), &packed, chunk_index);
                     }
+                    let consumed = self.value("alloca i1");
+                    let flip = self.value("alloca i1");
+                    self.line(format!("store i1 false, ptr {consumed}"));
+                    self.line(format!("store i1 false, ptr {flip}"));
+                    let task = self.pending_decode(id);
                     self.pending.insert(
                         request.observable,
                         PendingSolve {
                             binding,
                             raw,
-                            tasks: vec![id],
+                            tasks: vec![task],
+                            consumed,
+                            flip,
                         },
                     );
-                }
-                if self.program.tasks[id as usize].activation.is_some() {
-                    self.finish_solves(&[])?;
                 }
             }
             Instruction::WaitFor { until, memory } => {
@@ -480,7 +500,7 @@ impl Emitter<'_> {
                     if self
                         .pending
                         .values()
-                        .any(|solve| solve.tasks.iter().all(|task| !until.contains(task)))
+                        .any(|solve| solve.tasks.iter().all(|task| !until.contains(&task.task)))
                     {
                         return Err(unsupported(
                             "protection wait with an unrelated pending decoder session",
@@ -590,6 +610,12 @@ impl Emitter<'_> {
         }
         Ok(())
     }
+    fn pending_decode(&mut self, task: TaskId) -> PendingDecode {
+        let published = self.value("alloca i1");
+        self.line(format!("store i1 false, ptr {published}"));
+        PendingDecode { task, published }
+    }
+
     fn finish_solves(&mut self, memory: &[MemoryCycle]) -> Result<()> {
         if self.pending.is_empty() {
             return Ok(());
@@ -606,10 +632,12 @@ impl Emitter<'_> {
             let decoders: Vec<_> = self
                 .pending
                 .values()
-                .map(|pending| pending.binding.decoder)
+                .map(|pending| (pending.binding.decoder, pending.consumed.clone()))
                 .collect();
-            for decoder in decoders {
-                let v = self.value(format!("call i1 @decoder_ready_ui64(i64 {decoder})"));
+            for (decoder, consumed) in decoders {
+                let v = self.decoder_ready(decoder);
+                let consumed = self.value(format!("load i1, ptr {consumed}"));
+                let v = self.value(format!("or i1 {v}, {consumed}"));
                 all = self.value(format!("and i1 {all}, {v}"));
             }
             self.line(format!("br i1 {all}, label %{ready}, label %{round}"));
@@ -639,14 +667,29 @@ impl Emitter<'_> {
         }
         let pending = std::mem::take(&mut self.pending);
         for (observable, solve) in pending {
-            let mask = self.value(format!(
-                "call i64 @get_corrections_ui64(i64 {}, i64 {}, i64 1)",
-                solve.binding.decoder, solve.binding.correction_count
+            let consumed = self.value(format!("load i1, ptr {}", solve.consumed));
+            let consume = self.label();
+            let publish = self.label();
+            self.line(format!(
+                "br i1 {consumed}, label %{publish}, label %{consume}"
             ));
+            self.block(&consume);
+            let mask = self.decoder_consume(solve.binding.decoder, solve.binding.correction_count);
             let shifted = self.value(format!("lshr i64 {mask}, {}", solve.binding.correction_bit));
-            let flip = self.value(format!("trunc i64 {shifted} to i1"));
+            let selected = self.value(format!("and i64 {shifted}, 1"));
+            let flip = self.value(format!("icmp ne i64 {selected}, 0"));
+            self.line(format!("store i1 {flip}, ptr {}", solve.flip));
+            self.line(format!("store i1 true, ptr {}", solve.consumed));
+            self.line(format!("br label %{publish}"));
+            self.block(&publish);
+            let flip = self.value(format!("load i1, ptr {}", solve.flip));
             for task in solve.tasks {
-                let item = &self.program.tasks[task as usize];
+                let published = self.value(format!("load i1, ptr {}", task.published));
+                let write = self.label();
+                let next = self.label();
+                self.line(format!("br i1 {published}, label %{next}, label %{write}"));
+                self.block(&write);
+                let item = &self.program.tasks[task.task as usize];
                 let Instruction::Decode(request) = &item.instruction else {
                     return Err(invalid("pending task is not Decode"));
                 };
@@ -658,7 +701,10 @@ impl Emitter<'_> {
                 if let Some(output) = item.output {
                     self.write('b', output, &result)?;
                 }
-                self.done.insert(task);
+                self.line(format!("store i1 true, ptr {}", task.published));
+                self.line(format!("br label %{next}"));
+                self.block(&next);
+                self.done.insert(task.task);
             }
             self.cached.insert(observable, (flip, solve.raw));
         }
@@ -718,4 +764,4 @@ fn decode_observable(instruction: &Instruction) -> TaskId {
     }
 }
 
-const DECLARATIONS: &str = "declare void @__quantum__rt__initialize(ptr)\ndeclare i1 @__quantum__rt__read_result(ptr)\ndeclare void @__quantum__rt__bool_record_output(i1, ptr)\ndeclare void @__quantum__qis__h__body(ptr)\ndeclare void @__quantum__qis__x__body(ptr)\ndeclare void @__quantum__qis__z__body(ptr)\ndeclare void @__quantum__qis__s__body(ptr)\ndeclare void @__quantum__qis__s__adj(ptr)\ndeclare void @__quantum__qis__t__body(ptr)\ndeclare void @__quantum__qis__t__adj(ptr)\ndeclare void @__quantum__qis__cx__body(ptr, ptr)\ndeclare void @__quantum__qis__reset__body(ptr)\ndeclare void @__quantum__qis__mz__body(ptr, ptr) #1\ndeclare void @reset_decoder_ui64(i64)\ndeclare void @enqueue_syndromes_ui64(i64, i64, i64, i64)\ndeclare i64 @get_corrections_ui64(i64, i64, i64)\ndeclare i1 @decoder_ready_ui64(i64)\n";
+const DECLARATIONS: &str = "declare void @__quantum__rt__initialize(ptr)\ndeclare i1 @__quantum__rt__read_result(ptr)\ndeclare void @__quantum__rt__bool_record_output(i1, ptr)\ndeclare void @__quantum__qis__h__body(ptr)\ndeclare void @__quantum__qis__x__body(ptr)\ndeclare void @__quantum__qis__z__body(ptr)\ndeclare void @__quantum__qis__s__body(ptr)\ndeclare void @__quantum__qis__s__adj(ptr)\ndeclare void @__quantum__qis__t__body(ptr)\ndeclare void @__quantum__qis__t__adj(ptr)\ndeclare void @__quantum__qis__cx__body(ptr, ptr)\ndeclare void @__quantum__qis__reset__body(ptr)\ndeclare void @__quantum__qis__mz__body(ptr, ptr) #1\n";

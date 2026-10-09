@@ -140,4 +140,24 @@ impl_from! {
     bloq_vm::decoder::DecoderError,
     #[cfg(feature = "vm")]
     serde_json::Error,
+    #[cfg(feature = "qir")]
+    bloq_qir::QirEmissionError,
+}
+
+#[cfg(all(test, feature = "qir"))]
+mod tests {
+    #[test]
+    fn qir_errors_propagate_through_the_facade() {
+        fn export() -> super::Result<()> {
+            Err(bloq_qir::QirEmissionError::InvalidProgram(
+                "bad task".into(),
+            ))?;
+            Ok(())
+        }
+        let error = export().expect_err("retain the QIR error");
+        assert!(matches!(
+            error.downcast_ref::<bloq_qir::QirEmissionError>(),
+            Some(bloq_qir::QirEmissionError::InvalidProgram(message)) if message == "bad task"
+        ));
+    }
 }

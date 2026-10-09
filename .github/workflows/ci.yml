@@ -90,6 +90,15 @@ jobs:
           save-cache: ${{ github.ref == 'refs/heads/main' }}
           cache-dependency-glob: bloq_py/uv.lock
 
+      - name: Install LLVM 21 for QIR tests
+        if: matrix.recipe == 'ci-rust'
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
+          sudo bash "$RUNNER_TEMP/llvm.sh" 21
+          sudo apt-get install -y --no-install-recommends llvm-21
+          opt-21 --version
+          llvm-as-21 --version
+
       - name: Install Rust toolchain
         env:
           CI_RECIPE: ${{ matrix.recipe }}
@@ -180,9 +189,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  qir:
+    name: QIR compiler and simulator
+    needs: changes
+    if: contains(needs.changes.outputs.checks, 'ci-rust')
+    uses: qsbit-org/qsbit-compiler/.github/workflows/integration.yml@main
+    with:
+      compiler-ref: main
+      bloq-repository: ${{ github.repository }}
+      bloq-ref: ${{ github.sha }}
+
   ci:
     name: CI
-    needs: [changes, checks, windows, web]
+    needs: [changes, checks, windows, web, qir]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
