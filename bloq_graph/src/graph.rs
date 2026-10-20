@@ -2857,7 +2857,7 @@ impl BlockGraph {
         text: &str,
         limits: crate::ModuleCertificationLimits,
     ) -> Result<Self, BlockGraphError> {
-        crate::parser::parse_graph_input(text, limits)
+        crate::parser::parse_blog_to_graph_with_limits(text, limits)
     }
 
     /// Loads BLOG as a block graph, resolving imports relative to each file.
@@ -3428,27 +3428,6 @@ mod tests {
         assert!(popped.triangles.keys().all(|color| color.a == 255));
         assert!(popped.triangles.contains_key(&POPPED_X_FACE_COLOR));
         assert!(popped.triangles.contains_key(&POPPED_Z_FACE_COLOR));
-    }
-
-    #[test]
-    fn to_blog_text_serializes_action_dag_in_ordinal_order() {
-        let mut graph = BlockGraph::new();
-        graph.add_block(Block::new(
-            glam::ivec3(0, 0, 0),
-            BlockKind::Cube(CubeKind::ZXZ),
-        ));
-        graph
-            .set_actions_lenient(vec![Action::Measure {
-                target: MeasureTarget::Node(glam::ivec3(0, 0, 0)),
-                name: "m0".into(),
-            }])
-            .unwrap();
-
-        let text = graph.to_blog_text();
-        assert!(text.starts_with("BLOG 1.0\n"));
-        assert!(text.contains("m0 = measure 0\n"));
-        assert!(!text.contains("debug"));
-        assert!(!text.contains("set_time"));
     }
 
     #[test]

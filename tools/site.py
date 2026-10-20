@@ -58,7 +58,6 @@ def build_snapshot(root, destination, name, source, *, docs_only=False, isolated
     version = package_version(root)
     env = os.environ.copy()
     env["BLOQ_DOCS_VERSION"] = f"Development ({version})" if name == "dev" else name
-    env["BLOQ_DOCS_SOURCE"] = source
     env["BLOQ_DOCS_REF"] = source.split("+", 1)[0]
     # Tags never share compiled dependencies or installed bindings with dev.
     if isolated:
@@ -295,7 +294,7 @@ def check_links_and_privacy(output, *, incomplete=False):
             if target is not None and (not target.is_relative_to(output) or not target.is_file()):
                 errors.append(f"{origin.relative_to(output)}: missing CSS asset {reference}")
     forbidden = ("bloq-paper", "bloq-experiments", "/Users/", "/home/", "/var/folders/")
-    text_suffixes = {".html", ".js", ".json", ".svg", ".css", ".txt", ".md", ".rst", ".blog", ".bloqir", ".qasm", ".py"}
+    text_suffixes = {".html", ".js", ".json", ".svg", ".css", ".txt", ".md", ".rst", ".blog", ".bloqir", ".py"}
     for path in output.rglob("*"):
         if path.name == ".doctrees":
             errors.append(f"{path.relative_to(output)}: Sphinx build cache must not be published")

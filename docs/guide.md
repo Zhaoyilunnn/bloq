@@ -10,7 +10,7 @@ API; enabling one does not make compilation run extra verification automatically
 | Feature | Capability and scope |
 | --- | --- |
 | `gltf` | Export source geometry as glTF or an HTML viewer through `bloq::graph` |
-| `graph-verify` | Verify source logical maps and infer feedback using QuiZX, without native Stim bindings |
+| `graph-verify` | Verify source logical maps using QuiZX, without native Stim bindings |
 | `verify` | Verify physical Clifford flows through `bloq::stim`; adds the native Stim dependency |
 | `vm` | Lower and execute physical IR through `bloq::vm`, including adaptive control and non-Clifford verification |
 
@@ -30,7 +30,8 @@ and links to generated item documentation.
 ## Select the verification layer
 
 Choose `graph-verify` when comparing an authored graph with an expected logical
-map before physical compilation. Choose `verify` when checking Clifford flows in
+map, given as a QuiZX graph to `LogicalVerifier` or `verify_logical`, before
+physical compilation. Choose `verify` when checking Clifford flows in
 physical circuits with native Stim. Choose `vm` when measurement-dependent
 execution, retries, or corrected non-Clifford output states are the question.
 These layers check different properties; none alone establishes noisy decoding

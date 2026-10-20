@@ -1103,36 +1103,24 @@ mod tests {
             .expect("the parent continuation starts after the accepted RUS attempt");
     }
 
-    /// A real observable-bearing gallery program (the T-gate fixture: feedforward
-    /// frames plus the RUS-gap decode) validates — every folded `Output` face is
-    /// terminal, after every solve. The count assertion prevents a vacuous check.
     #[test]
     fn t_gate_gallery_program_validates() {
-        let graph = bloq_graph::GalleryItem::T.build();
-        let mut bloq = bloq_compile::compile(&graph, 3).expect("t_gate compiles");
-        bloq.flatten().expect("flatten t_gate");
+        let case = bloq_test::CompileReadyCase::from_test_case(
+            bloq_test::find_test_case("t_gate[open]").expect("native T gallery case"),
+        )
+        .expect("gallery case builds");
+        let mut bloq = bloq_compile::compile(&case.graph, 3).expect("native T compiles");
+        bloq.flatten().expect("flatten native T");
 
         assert!(
-            count_decodes(bloq.top()) > 0,
-            "t_gate fixture must contain observables"
+            bloq.levels()
+                .any(|(_, level)| level.nodes().any(|(_, node)| matches!(
+                    node.try_classical(),
+                    Some(ClassicalNode::Observable { .. })
+                ))),
+            "native T must contain observables"
         );
-        guard_decode_observable_closure(&bloq).expect("t_gate closes every decoded face");
-    }
-
-    /// Complete observables anywhere in the program (recursing region bodies).
-    fn count_decodes(level: &SubGraph) -> usize {
-        let mut count = 0;
-        for (_, node) in level.nodes() {
-            if matches!(node.try_classical(), Some(ClassicalNode::Observable { .. })) {
-                count += 1;
-            }
-            if let Some(region) = node.try_region() {
-                for (_, body) in region.bodies() {
-                    count += count_decodes(body);
-                }
-            }
-        }
-        count
+        guard_decode_observable_closure(&bloq).expect("native T closes every decoded face");
     }
 
     // ---- terminal read: guard_consumed_output_faces ----
