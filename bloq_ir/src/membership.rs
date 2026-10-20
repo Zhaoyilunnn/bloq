@@ -149,6 +149,47 @@ impl<'a> PredicateAnalysis<'a> {
         Ok(result)
     }
 
+    /// Whether all required predicates can hold while every excluded
+    /// conjunction is false. Empty requirements are unconditional; an empty
+    /// excluded conjunction rules out every assignment.
+    ///
+    /// Shared Boolean ancestry is retained without enumerating branch choices.
+    ///
+    /// # Errors
+    /// Returns malformed predicate dataflow or exhausted Boolean resources.
+    pub fn coexist_without(
+        &mut self,
+        required: &[ValueRef],
+        excluded: &[Vec<ValueRef>],
+    ) -> Result<bool, Error> {
+        self.charge(
+            required
+                .len()
+                .saturating_add(excluded.len())
+                .saturating_add(1),
+        )?;
+        let mut domain = self.conjunction(required)?;
+        for conjunction in excluded {
+            self.charge(conjunction.len())?;
+            let active = self.conjunction(conjunction)?;
+            let inactive = self.diagram.negate(active)?;
+            domain = self.diagram.apply(BooleanOp::And, domain, inactive)?;
+            if domain == DECISION_FALSE {
+                return Ok(false);
+            }
+        }
+        Ok(domain != DECISION_FALSE)
+    }
+
+    fn conjunction(&mut self, predicates: &[ValueRef]) -> Result<DecisionId, Error> {
+        let mut result = DECISION_TRUE;
+        for &predicate in predicates {
+            let value = self.guard(Some(predicate))?;
+            result = self.diagram.apply(BooleanOp::And, result, value)?;
+        }
+        Ok(result)
+    }
+
     fn guard(&mut self, node: Option<ValueRef>) -> Result<DecisionId, Error> {
         node.map(|node| self.lower(Eval::Node(node)))
             .transpose()
@@ -197,11 +238,7 @@ impl<'a> PredicateAnalysis<'a> {
         if self.proves_conjunct(left, right)? {
             return Ok(true);
         }
-        let mut source = DECISION_TRUE;
-        for &node in left {
-            let value = self.guard(Some(node))?;
-            source = self.diagram.apply(BooleanOp::And, source, value)?;
-        }
+        let source = self.conjunction(left)?;
         let target = self.guard(Some(right))?;
         let absent = self.diagram.negate(target)?;
         Ok(self.diagram.apply(BooleanOp::And, source, absent)? == DECISION_FALSE)
@@ -1350,6 +1387,56 @@ mod tests {
         assert!(matches!(
             bloq.validate(),
             Err(BloqValidationError::ConditionalReferenceUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn excluded_conjunctions_preserve_guard_correlations_without_branch_enumeration() {
+        let mut graph = SubGraph::new();
+        let a = graph.add_node(BloqNode::classical(ClassicalNode::observable_fragment(
+            Vec::new(),
+            Vec::new(),
+        )));
+        let b = graph.add_node(BloqNode::classical(ClassicalNode::observable_fragment(
+            Vec::new(),
+            Vec::new(),
+        )));
+        let inverse = graph.add_node(BloqNode::classical(ClassicalNode::Compute {
+            expr: ClassicalExpr::Not(Box::new(ClassicalExpr::In(0))),
+        }));
+        graph.add_edge(a, inverse, BloqEdge::value(0));
+        let mut predicates = PredicateAnalysis::new(&graph);
+        assert!(
+            predicates
+                .coexist_without(&[a.into()], &[vec![a.into(), b.into()]])
+                .unwrap()
+        );
+        assert!(
+            !predicates
+                .coexist_without(&[a.into(), b.into()], &[vec![a.into(), b.into()]])
+                .unwrap()
+        );
+        assert!(
+            predicates
+                .coexist_without(&[a.into(), b.into()], &[vec![inverse.into()]])
+                .unwrap()
+        );
+        assert!(
+            !predicates
+                .coexist_without(&[], &[vec![a.into()], vec![inverse.into()]])
+                .unwrap()
+        );
+        assert!(!predicates.coexist_without(&[], &[vec![]]).unwrap());
+        let mut limited = PredicateAnalysis::with_limits(
+            &graph,
+            BooleanLimits {
+                max_steps: 0,
+                ..BooleanLimits::DEFAULT
+            },
+        );
+        assert!(matches!(
+            limited.coexist_without(&[], &[]),
+            Err(Error::BooleanResource(_))
         ));
     }
 
