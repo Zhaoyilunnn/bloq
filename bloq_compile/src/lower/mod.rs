@@ -4,7 +4,7 @@
 //! dataflow for selectives, feedback, and regions.
 
 use bloq_circuit::PauliMap;
-use bloq_graph::{Basis, BlockGraph, BlockKind, Pauli};
+use bloq_graph::{Basis, BlockGraph, BlockKind, Pauli, PortRole};
 use bloq_ir::{
     Bloq, BloqValidationError, ClassicalNode, LogicalInput, LogicalOutput, NodeDetector,
     TemplateId, TemporalPipeRef, WalkControl,
@@ -15,7 +15,7 @@ use petgraph::graph::NodeIndex;
 
 use crate::CompileError;
 use crate::block::{LoweringTemplateId, LoweringTemplatePool};
-use crate::spatial_port::SpatialPortExpansionMap;
+use crate::port::PortExpansionMap;
 
 mod classify;
 mod detector;
@@ -122,10 +122,11 @@ impl BloqLowerContext<'_> {
 /// Source cut ownership needed after physical/semantic assembly is released.
 /// Operator inference still runs on optimized IR; the expanded source graph,
 /// signature maps, readout plan, and Boolean caches are no longer needed then.
+type BoundPorts = crate::FxMap<TemplateInstanceId, (IVec3, Option<IVec2>)>;
+
 pub(crate) struct LogicalInterface {
-    inputs: crate::FxMap<TemplateInstanceId, IVec3>,
-    outputs: crate::FxMap<TemplateInstanceId, IVec3>,
-    multiplex: Vec<(IVec3, TemplateInstanceId, IVec2)>,
+    inputs: BoundPorts,
+    outputs: BoundPorts,
     distance: u32,
 }
 
@@ -134,76 +135,62 @@ impl LogicalInterface {
         bloq: &Bloq,
         graph: &BlockGraph,
         instance_by_site: &crate::FxMap<ChunkSiteSource, TemplateInstanceId>,
-        spatial_ports: &SpatialPortExpansionMap,
+        ports: &PortExpansionMap,
         distance: u32,
     ) -> Self {
-        let inputs = instance_by_site
-            .iter()
-            .filter_map(|(source, &instance)| match source {
-                ChunkSiteSource::SpatialPort(port)
-                    if spatial_ports[port].role.has_input_boundary() =>
-                {
-                    Some((instance, *port))
-                }
-                ChunkSiteSource::Block(port)
-                    if !spatial_ports.contains_key(port)
-                        && graph.get_block(*port).is_some_and(|block| {
-                            block.kind() == BlockKind::Port
-                                && match block.port_role().expect("Port blocks expose a role") {
-                                    bloq_graph::PortRole::Input
-                                    | bloq_graph::PortRole::Multiplex => true,
-                                    bloq_graph::PortRole::Output => false,
-                                    bloq_graph::PortRole::Auto => graph
-                                        .neighbor_positions(*port)
-                                        .iter()
-                                        .all(|neighbor| neighbor.z > port.z),
-                                }
-                        }) =>
-                {
-                    Some((instance, *port))
-                }
-                _ => None,
-            })
-            .collect();
-        let frame_ports: crate::FxSet<IVec3> = bloq
+        let frame_ports = bloq
             .output_frames()
             .into_iter()
             .map(|frame| frame.port)
-            .collect();
-        let outputs = instance_by_site
-            .iter()
-            .filter_map(|(source, &instance)| match source {
-                ChunkSiteSource::SpatialPort(port)
-                    if frame_ports.contains(port)
-                        && spatial_ports[port].role != bloq_graph::PortRole::Multiplex =>
+            .collect::<crate::FxSet<_>>();
+        let mut inputs = BoundPorts::default();
+        let mut outputs = BoundPorts::default();
+        for (&site, &instance) in instance_by_site {
+            let (position, expansion) = match site {
+                ChunkSiteSource::SpatialPort(position) => (position, Some(ports[&position])),
+                ChunkSiteSource::Block(position)
+                    if graph
+                        .get_block(position)
+                        .is_some_and(|block| block.kind() == BlockKind::Port) =>
                 {
-                    Some((instance, *port))
+                    (position, ports.get(&position).copied())
                 }
-                ChunkSiteSource::Block(port)
-                    if frame_ports.contains(port) && !spatial_ports.contains_key(port) =>
+                _ => continue,
+            };
+            let role = expansion.map(|port| port.role).unwrap_or_else(|| {
+                let role = graph
+                    .get_block(position)
+                    .expect("Port exists")
+                    .port_role()
+                    .expect("Port has role");
+                if role != PortRole::Auto {
+                    role
+                } else if graph
+                    .neighbor_positions(position)
+                    .iter()
+                    .all(|neighbor| neighbor.z > position.z)
                 {
-                    Some((instance, *port))
+                    PortRole::Input
+                } else {
+                    PortRole::Output
                 }
-                _ => None,
-            })
-            .collect();
-
-        let multiplex = spatial_ports
-            .values()
-            .filter(|port| port.role == bloq_graph::PortRole::Multiplex)
-            .map(|port| {
-                (
-                    port.source,
-                    instance_by_site[&ChunkSiteSource::SpatialPort(port.source)],
-                    port.output_qubit
-                        .expect("Multiplex expansions allocate an output qubit"),
-                )
-            })
-            .collect();
+            });
+            if role.has_input_boundary() {
+                let private = expansion
+                    .filter(|port| !port.is_spatial())
+                    .and_then(|port| port.private_qubit);
+                inputs.insert(instance, (position, private));
+            }
+            if role.has_output_boundary() && frame_ports.contains(&position) {
+                outputs.insert(
+                    instance,
+                    (position, expansion.and_then(|port| port.private_qubit)),
+                );
+            }
+        }
         Self {
             inputs,
             outputs,
-            multiplex,
             distance,
         }
     }
@@ -214,112 +201,109 @@ pub(crate) fn finish_program(
     bloq: &mut Bloq,
     interface: LogicalInterface,
 ) -> Result<(), CompileError> {
+    // Port-adapter outcomes already enter readouts and frames through their gateways.
     schedule::induce_occupancy_order_edges(bloq)?;
     bloq.optimize()
         .map_err(|_| BloqValidationError::CyclicGraph)?;
-    let inputs = logical_inputs(bloq, interface.inputs, interface.distance)?;
-    bloq.set_logical_inputs(inputs);
-    let outputs = logical_outputs(
+    let inputs = logical_boundaries(
         bloq,
-        interface.outputs,
-        interface.multiplex,
+        interface.inputs,
+        bloq_ir::BoundaryFace::Input,
         interface.distance,
     )?;
-    bloq.set_logical_outputs(outputs);
+    bloq.set_logical_inputs(
+        inputs
+            .into_iter()
+            .map(|(port, instance, x, z)| LogicalInput {
+                port,
+                instance,
+                x,
+                z,
+            })
+            .collect(),
+    );
+    let outputs = logical_boundaries(
+        bloq,
+        interface.outputs,
+        bloq_ir::BoundaryFace::Output,
+        interface.distance,
+    )?;
+    bloq.set_logical_outputs(
+        outputs
+            .into_iter()
+            .map(|(port, instance, x, z)| LogicalOutput {
+                port,
+                instance,
+                x,
+                z,
+            })
+            .collect(),
+    );
     Ok(())
 }
 
-/// Persist the complete input patches an execution hook may initialize.
+/// Persist the complete boundary operators an execution hook may initialize
+/// or read, sorted by port.
 ///
-/// Both ordinary temporal (`+Z`) Ports and compiler-expanded spatial input
-/// Ports land here. The bound interface is the authoritative source→instance
-/// map; the executor must not reconstruct it from fused-node provenance.
-fn logical_inputs(
+/// Ordinary temporal Ports, reversed temporal Port adapters, and
+/// compiler-expanded spatial Ports land here. The bound interface is the
+/// authoritative source→instance map; the executor must not reconstruct it
+/// from fused-node provenance. Compiler geometry stays here; consumers read
+/// only the resulting IR maps.
+fn logical_boundaries(
     bloq: &Bloq,
-    ports_by_instance: crate::FxMap<TemplateInstanceId, IVec3>,
+    ports_by_instance: BoundPorts,
+    face: bloq_ir::BoundaryFace,
     distance: u32,
-) -> Result<Vec<LogicalInput>, CompileError> {
-    let (placements, mut faces) = logical_faces(bloq, bloq_ir::BoundaryFace::Input);
+) -> Result<Vec<(IVec3, TemplateInstanceId, PauliMap, PauliMap)>, CompileError> {
+    let (placements, mut faces) = logical_faces(bloq, face);
 
-    let mut inputs = Vec::new();
-    for (instance, port) in ports_by_instance {
+    let mut boundaries = Vec::new();
+    for (instance, (port, private)) in ports_by_instance {
         let (template, offset) = placements[&instance];
-        let Some((x, z)) = boundary_operators(
-            &bloq.templates()[template],
-            faces.remove(&instance).unwrap_or_default(),
-            bloq_ir::BoundaryFace::Input,
-            offset,
-            distance,
-        )?
-        else {
-            continue;
+        let pair = if let Some(qubit) = private {
+            Some(private_boundary_pair(bloq, instance, port, qubit, offset)?)
+        } else {
+            boundary_operators(
+                &bloq.templates()[template],
+                faces.remove(&instance).unwrap_or_default(),
+                face,
+                offset,
+                distance,
+            )?
         };
-
-        inputs.push(LogicalInput {
-            port,
-            instance,
-            x,
-            z,
-        });
+        if let Some((x, z)) = pair {
+            boundaries.push((port, instance, x, z));
+        }
     }
-    inputs.sort_by_key(|input| input.port.to_array());
-    Ok(inputs)
+    boundaries.sort_by_key(|(port, ..)| port.to_array());
+    Ok(boundaries)
 }
 
-/// Persist the complete terminal logical operators the executor needs.
-/// Compiler geometry stays here; consumers read only the resulting IR maps.
-fn logical_outputs(
+fn private_boundary_pair(
     bloq: &Bloq,
-    ports_by_instance: crate::FxMap<TemplateInstanceId, IVec3>,
-    multiplex: Vec<(IVec3, TemplateInstanceId, IVec2)>,
-    distance: u32,
-) -> Result<Vec<LogicalOutput>, CompileError> {
-    let (placements, mut faces) = logical_faces(bloq, bloq_ir::BoundaryFace::Output);
-
-    let mut outputs = Vec::new();
-    for (instance, port) in ports_by_instance {
-        let (template, offset) = placements[&instance];
-        let Some((x, z)) = boundary_operators(
-            &bloq.templates()[template],
-            faces.remove(&instance).unwrap_or_default(),
-            bloq_ir::BoundaryFace::Output,
-            offset,
-            distance,
-        )?
-        else {
-            continue;
-        };
-        outputs.push(LogicalOutput {
-            port,
-            instance,
-            x,
-            z,
-        });
-    }
-    for (port, instance, output_qubit) in multiplex {
-        let qubit =
-            bloq_circuit::checked_translate_coordinate(output_qubit, placements[&instance].1)?;
-        for (_, node) in bloq.quantum_nodes() {
-            for other in &node.instances {
-                if other.id == instance {
-                    continue;
-                }
-                for local in bloq.templates()[other.template_id].qubits() {
-                    if bloq_circuit::checked_translate_coordinate(*local, other.offset)? == qubit {
-                        return Err(CompileError::MultiplexOutputCoordinateUnavailable { port });
-                    }
+    instance: TemplateInstanceId,
+    port: IVec3,
+    qubit: IVec2,
+    offset: IVec2,
+) -> Result<(PauliMap, PauliMap), CompileError> {
+    let qubit = bloq_circuit::checked_translate_coordinate(qubit, offset)?;
+    for (_, node) in bloq.quantum_nodes() {
+        for other in &node.instances {
+            if other.id == instance {
+                continue;
+            }
+            for local in bloq.templates()[other.template_id].qubits() {
+                if bloq_circuit::checked_translate_coordinate(*local, other.offset)? == qubit {
+                    return Err(CompileError::PrivatePortCoordinateUnavailable { port });
                 }
             }
         }
-        outputs.push(LogicalOutput {
-            port,
-            instance,
-            x: PauliMap::from_unique_entries([(qubit, Pauli::X)]),
-            z: PauliMap::from_unique_entries([(qubit, Pauli::Z)]),
-        });
     }
-    outputs.sort_by_key(|output| output.port.to_array());
-    Ok(outputs)
+    Ok((
+        PauliMap::from_unique_entries([(qubit, Pauli::X)]),
+        PauliMap::from_unique_entries([(qubit, Pauli::Z)]),
+    ))
 }
 
 type LogicalFaces = crate::FxMap<TemplateInstanceId, (Option<PauliMap>, Option<PauliMap>)>;

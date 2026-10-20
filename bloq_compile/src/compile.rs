@@ -10,17 +10,17 @@ use glam::{IVec2, IVec3};
 use web_time::Instant;
 
 use crate::block::{
-    LoweringTemplateId, SelectiveTemplates, SpatialHadamardKey, WallSide, compile_fixed_bulk,
-    compile_multiplex_port, compile_realignment, compile_selective, compile_spatial_hadamard,
-    validate_fixed_bulk,
+    LoweringTemplateId, SelectiveTemplates, SpatialHadamardKey, WallSide, compile_bell_port,
+    compile_fixed_bulk, compile_multiplex_port, compile_realignment, compile_selective,
+    compile_spatial_hadamard, validate_fixed_bulk,
 };
 use crate::config::CompileConfig;
 use crate::lower::{PhysicalInput, lower_clifford_proxy};
+use crate::port::PortExpansionMap;
 use crate::signature::{
     BlockSignature, BlockSignatureMap, block_signatures, derive_block_signature,
     join_component_layer_schedules, relocatable_block_signatures,
 };
-use crate::spatial_port::SpatialPortExpansionMap;
 use crate::{Bloq, CompileError, Connectivity};
 
 #[path = "registry.rs"]
@@ -35,7 +35,7 @@ struct ProxyPreflight {
     graph: BlockGraph,
     signatures: BlockSignatureMap,
     stabilizers: StabilizerGenerators,
-    spatial_ports: SpatialPortExpansionMap,
+    ports: PortExpansionMap,
 }
 
 /// Metadata key for the code distance used to compile a [`Bloq`].
@@ -126,9 +126,9 @@ impl CompiledObject {
 struct PreparedProxy {
     graph: BlockGraph,
     stabilizers: StabilizerGenerators,
-    spatial_ports: SpatialPortExpansionMap,
+    ports: PortExpansionMap,
     compiled: CompiledTemplateMap,
-    spatial_port_templates: CompiledTemplateMap,
+    port_templates: CompiledTemplateMap,
     plan: crate::lower::LinkedPlanInput,
     temporal_templates: crate::FxMap<crate::lower::TemplatePlan, LoweringTemplateId>,
     wall_templates: crate::FxMap<crate::lower::SpatialPipeRef, LoweringTemplateId>,
@@ -263,18 +263,21 @@ fn relocate_definition_sites(
 fn select_link_signatures(
     config: CompileConfig,
     graph: &BlockGraph,
-    spatial_ports: &SpatialPortExpansionMap,
+    ports: &PortExpansionMap,
     #[cfg(test)] builds: &std::sync::atomic::AtomicUsize,
 ) -> Result<BlockSignatureMap, CompileError> {
     #[cfg(test)]
     builds.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let schedules = join_component_layer_schedules(graph)?;
     let mut signatures = block_signatures(graph, &schedules, config.code_distance())?;
-    for expansion in spatial_ports.values() {
+    for (source, dir) in ports
+        .values()
+        .filter_map(|port| port.cube_pipe_dir().map(|dir| (port.source, dir)))
+    {
         let signature = signatures
-            .get_mut(&expansion.source)
+            .get_mut(&source)
             .expect("signature map contains the derived cube");
-        signature.connectivity = signature.connectivity.with_pipe(expansion.cube_pipe_dir());
+        signature.connectivity = signature.connectivity.with_pipe(dir);
     }
     for &signature in signatures.values() {
         validate_fixed_bulk(signature)?;
@@ -285,7 +288,7 @@ fn select_link_signatures(
 fn select_module_link_templates_with_schedule(
     config: CompileConfig,
     graph: &BlockGraph,
-    spatial_ports: &SpatialPortExpansionMap,
+    ports: &PortExpansionMap,
     definitions: &[Arc<PreparedDefinitionObject>],
     sites: &[PreparedSiteRelocation],
     schedules: &crate::signature::LayerScheduleMap,
@@ -299,8 +302,11 @@ fn select_module_link_templates_with_schedule(
                 .get_block(site.position)
                 .expect("module relocation names a linked block");
             let mut graph_connectivity = BlockSignature::graph_connectivity(block, graph);
-            if let Some(expansion) = spatial_ports.get(&site.position) {
-                graph_connectivity = graph_connectivity.with_pipe(expansion.cube_pipe_dir());
+            let cube_pipe = ports
+                .get(&site.position)
+                .and_then(|port| port.cube_pipe_dir());
+            if let Some(dir) = cube_pipe {
+                graph_connectivity = graph_connectivity.with_pipe(dir);
             }
             let surgery_side = (block.kind() == BlockKind::T).then(|| t_sides[&site.position]);
             let mut linked_signature = derive_block_signature(
@@ -310,10 +316,8 @@ fn select_module_link_templates_with_schedule(
                 crate::signature::layer_schedule_at(schedules, site.position),
                 surgery_side,
             )?;
-            if let Some(expansion) = spatial_ports.get(&site.position) {
-                linked_signature.connectivity = linked_signature
-                    .connectivity
-                    .with_pipe(expansion.cube_pipe_dir());
+            if let Some(dir) = cube_pipe {
+                linked_signature.connectivity = linked_signature.connectivity.with_pipe(dir);
             }
             let variant = DefinitionVariantKey {
                 local_position: site.local_position,
@@ -732,9 +736,11 @@ fn proxy_context(config: CompileConfig) -> CompileContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Signature {
     Block(BlockSignature),
-    MultiplexPort {
+    Port {
         boundary_basis: Basis,
-        output_qubit: IVec2,
+        connectivity: Connectivity,
+        role: PortRole,
+        private_qubit: IVec2,
     },
     Realignment {
         top_basis: Basis,
@@ -990,23 +996,21 @@ impl CompileContext {
         let (source_graph, stabilizers) = proxy
             .summary
             .materialize_clifford_distance_relation(&proxy.pins)?;
-        let (graph, spatial_ports) = crate::spatial_port::expand_spatial_port_topology(
-            &source_graph,
-            self.config.code_distance(),
-        )?;
-        self.proxy_preflight(graph.into_owned(), stabilizers, spatial_ports)
+        let (graph, ports) =
+            crate::port::expand_port_topology(&source_graph, self.config.code_distance())?;
+        self.proxy_preflight(graph.into_owned(), stabilizers, ports)
     }
 
     fn proxy_preflight(
         &self,
         graph: BlockGraph,
         stabilizers: StabilizerGenerators,
-        spatial_ports: SpatialPortExpansionMap,
+        ports: PortExpansionMap,
     ) -> Result<ProxyPreflight, CompileError> {
         let signatures = select_link_signatures(
             self.config,
             &graph,
-            &spatial_ports,
+            &ports,
             #[cfg(test)]
             &self.flat_signature_builds,
         )?;
@@ -1014,7 +1018,7 @@ impl CompileContext {
             graph,
             signatures,
             stabilizers,
-            spatial_ports,
+            ports,
         })
     }
 
@@ -1121,10 +1125,8 @@ impl CompileContext {
                 }
                 let graph = oriented_graph.canonical_true_branch_view()?;
                 let graph = graph.fix_shadowed_faces();
-                let (graph, spatial_ports) = crate::spatial_port::expand_spatial_port_topology(
-                    &graph,
-                    self.config.code_distance(),
-                )?;
+                let (graph, ports) =
+                    crate::port::expand_port_topology(&graph, self.config.code_distance())?;
                 let local_positions = oriented_sites
                     .iter()
                     .filter(|(_, site)| site.definition == *name && site.instance_path.is_empty())
@@ -1140,7 +1142,7 @@ impl CompileContext {
                     &signatures,
                     &oriented_sites,
                     &seam_faces,
-                    &spatial_ports,
+                    &ports,
                 )?];
                 let regions = graph.branch_regions()?;
                 if !regions.is_empty() {
@@ -1157,7 +1159,7 @@ impl CompileContext {
                         &signatures,
                         &oriented_sites,
                         &seam_faces,
-                        &spatial_ports,
+                        &ports,
                     )?);
                 }
 
@@ -1205,28 +1207,35 @@ impl CompileContext {
             graph,
             signatures,
             stabilizers,
-            spatial_ports,
+            ports,
         } = self.preflight_proxy()?;
         self.report_progress(CompileStage::Templates)?;
         let mut compiled = self.compile_blocks(&graph, &ordered_blocks(&graph), &signatures)?;
-        for expansion in spatial_ports.values() {
+        for (source, dir) in ports
+            .values()
+            .filter_map(|port| port.cube_pipe_dir().map(|dir| (port.source, dir)))
+        {
             let derived = compiled
-                .get_mut(&expansion.source)
+                .get_mut(&source)
                 .expect("derived cube was compiled");
-            derived.graph_connectivity = derived
-                .graph_connectivity
-                .with_pipe(expansion.cube_pipe_dir());
+            derived.graph_connectivity = derived.graph_connectivity.with_pipe(dir);
         }
-        let spatial_port_templates = self.compile_spatial_port_templates(&spatial_ports)?;
+        let port_templates = self.compile_port_templates(&ports)?;
+        for port in ports.values().filter(|port| !port.is_spatial()) {
+            compiled
+                .get_mut(&port.source)
+                .expect("temporal Port was compiled")
+                .template = port_templates[&port.source].template;
+        }
         let plan = crate::lower::LinkedPlanInput::from_module_graph(
             &graph,
-            &spatial_ports,
+            &ports,
             compiled.keys().copied(),
         );
         let temporal_templates = self.compile_temporal_template_plans(plan.temporal_templates())?;
-        let wall_templates = self.compile_spatial_template_walls(&graph, plan.spatial_walls())?;
-        let needs_padding =
-            !spatial_ports.is_empty() || graph.pipes().any(|pipe| !pipe.dir().is_spatial());
+        let wall_templates =
+            self.compile_spatial_template_walls(&graph, &ports, plan.spatial_walls())?;
+        let needs_padding = !ports.is_empty() || graph.pipes().any(|pipe| !pipe.dir().is_spatial());
         let padding_templates = self
             .cache
             .padding
@@ -1235,9 +1244,9 @@ impl CompileContext {
         Ok(PreparedProxy {
             graph,
             stabilizers,
-            spatial_ports,
+            ports,
             compiled,
-            spatial_port_templates,
+            port_templates,
             plan,
             temporal_templates,
             wall_templates,
@@ -1253,9 +1262,9 @@ impl CompileContext {
         let PreparedProxy {
             graph,
             stabilizers,
-            spatial_ports,
+            ports,
             compiled,
-            spatial_port_templates,
+            port_templates,
             plan,
             temporal_templates,
             wall_templates,
@@ -1268,8 +1277,8 @@ impl CompileContext {
                 graph: &graph,
                 plan: &plan,
                 compiled: &compiled,
-                spatial_port_templates: &spatial_port_templates,
-                spatial_ports: &spatial_ports,
+                port_templates: &port_templates,
+                ports: &ports,
                 temporal_templates: &temporal_templates,
                 wall_templates: &wall_templates,
                 template_pool: &template_pool,
@@ -1302,7 +1311,7 @@ impl CompileContext {
         signatures: &BlockSignatureMap,
         module_sites: &std::collections::HashMap<IVec3, bloq_graph::MaterializedModuleSite>,
         seam_faces: &std::collections::HashMap<(String, IVec3), Vec<bloq_graph::Direction>>,
-        spatial_ports: &SpatialPortExpansionMap,
+        ports: &PortExpansionMap,
     ) -> Result<CompiledDefinitionVariantMap, CompileError> {
         let mut inventory = CompiledDefinitionVariantMap::default();
         for (&position, &signature) in signatures {
@@ -1311,11 +1320,9 @@ impl CompileContext {
                 .expect("compiled site belongs to the prepared graph");
             let mut signature = signature;
             let mut exact_graph_connectivity = BlockSignature::graph_connectivity(block, graph);
-            if let Some(expansion) = spatial_ports.get(&position) {
-                exact_graph_connectivity =
-                    exact_graph_connectivity.with_pipe(expansion.cube_pipe_dir());
-                signature.connectivity =
-                    signature.connectivity.with_pipe(expansion.cube_pipe_dir());
+            if let Some(dir) = ports.get(&position).and_then(|port| port.cube_pipe_dir()) {
+                exact_graph_connectivity = exact_graph_connectivity.with_pipe(dir);
+                signature.connectivity = signature.connectivity.with_pipe(dir);
             }
             let site = module_sites
                 .get(&position)
@@ -1486,29 +1493,37 @@ impl CompileContext {
         Ok(compiled)
     }
 
-    fn compile_spatial_port_templates(
+    fn compile_port_templates(
         &self,
-        spatial_ports: &SpatialPortExpansionMap,
+        ports: &PortExpansionMap,
     ) -> Result<CompiledTemplateMap, CompileError> {
         let mut compiled = CompiledTemplateMap::default();
-        for expansion in spatial_ports.values().copied() {
+        for expansion in ports.values().copied() {
             self.check_cancellation()?;
-            let connectivity = Connectivity::ISOLATED.with_pipe(expansion.port_pipe_dir());
-            let template = if expansion.role == PortRole::Multiplex {
-                let output_qubit = expansion
-                    .output_qubit
-                    .expect("Multiplex expansions allocate an output qubit");
+            let connectivity = Connectivity::ISOLATED.with_pipe(expansion.pipe_dir);
+            let template = if let Some(private_qubit) = expansion.private_qubit {
                 TemplateRef::Fixed(self.cache.get_or_compile_fixed(
-                    Signature::MultiplexPort {
-                        boundary_basis: expansion.boundary_basis(),
-                        output_qubit,
+                    Signature::Port {
+                        boundary_basis: expansion.boundary_basis,
+                        connectivity,
+                        role: expansion.role,
+                        private_qubit,
                     },
                     || {
-                        compile_multiplex_port(
-                            expansion.boundary_basis(),
-                            self.config.code_distance(),
-                            output_qubit,
-                        )
+                        if expansion.role == PortRole::Multiplex {
+                            compile_multiplex_port(
+                                expansion.boundary_basis,
+                                self.config.code_distance(),
+                                private_qubit,
+                            )
+                        } else {
+                            compile_bell_port(
+                                expansion.boundary_basis,
+                                connectivity,
+                                self.config.code_distance(),
+                                private_qubit,
+                            )
+                        }
                     },
                 )?)
             } else {
@@ -1516,7 +1531,7 @@ impl CompileContext {
                     kind: BlockKind::Port,
                     rounds: None,
                     connectivity,
-                    boundary_basis: Some(expansion.boundary_basis()),
+                    boundary_basis: Some(expansion.boundary_basis),
                     layer_schedule: None,
                     surgery_side: None,
                 })?
@@ -1605,13 +1620,14 @@ impl CompileContext {
     fn compile_spatial_template_walls(
         &self,
         graph: &BlockGraph,
+        ports: &PortExpansionMap,
         walls: impl IntoIterator<Item = crate::lower::SpatialPipeRef>,
     ) -> Result<crate::FxMap<crate::lower::SpatialPipeRef, LoweringTemplateId>, CompileError> {
         let mut templates = crate::FxMap::default();
         for wall in walls {
             self.check_cancellation()?;
             let distance = self.config.code_distance();
-            let key = spatial_hadamard_key(graph, wall, distance)?;
+            let key = spatial_hadamard_key(graph, ports, wall, distance)?;
             let template = self
                 .cache
                 .get_or_compile_fixed(Signature::SpatialHadamardPipe(key), || {
@@ -1646,6 +1662,7 @@ impl CompileContext {
 /// defensive because `Walking` signatures omit spatial faces.
 fn spatial_hadamard_key(
     graph: &BlockGraph,
+    ports: &PortExpansionMap,
     wall: crate::lower::SpatialPipeRef,
     distance: u32,
 ) -> Result<SpatialHadamardKey, CompileError> {
@@ -1667,7 +1684,15 @@ fn spatial_hadamard_key(
         bloq_graph::UDirection::Z => unreachable!("spatial Hadamard walls are not temporal"),
     };
     let make_side = |block: &Block, kind: bloq_graph::CubeKind| {
-        let connectivity = BlockSignature::template_connectivity(block, graph);
+        let mut connectivity = BlockSignature::template_connectivity(block, graph);
+        // The positionless Port half leaves this face open in the cube template.
+        // The wall must make the same data-collapse decision as that cube.
+        if let Some(dir) = ports
+            .get(&block.pos())
+            .and_then(|port| port.cube_pipe_dir())
+        {
+            connectivity = connectivity.with_pipe(dir);
+        }
         WallSide {
             temporal_basis: kind.z(),
             connectivity,
@@ -2457,8 +2482,8 @@ mod tests {
             graph: &prepared.graph,
             plan: &plan,
             compiled: &prepared.compiled,
-            spatial_port_templates: &prepared.spatial_port_templates,
-            spatial_ports: &prepared.spatial_ports,
+            port_templates: &prepared.port_templates,
+            ports: &prepared.ports,
             temporal_templates: &prepared.temporal_templates,
             wall_templates: &prepared.wall_templates,
             template_pool: &prepared.template_pool,
@@ -4443,7 +4468,7 @@ module main {{
             select_module_link_templates_with_schedule(
                 CompileConfig::default(),
                 &graph,
-                &SpatialPortExpansionMap::default(),
+                &PortExpansionMap::default(),
                 &definitions,
                 &sites,
                 &crate::signature::join_component_layer_schedules(&graph).unwrap(),
@@ -4723,7 +4748,7 @@ module main {
         let signatures = select_link_signatures(
             context.config,
             &graph,
-            &SpatialPortExpansionMap::default(),
+            &PortExpansionMap::default(),
             &context.flat_signature_builds,
         )
         .unwrap();
@@ -4796,7 +4821,7 @@ module main {
             select_link_signatures(
                 context.config,
                 &graph,
-                &SpatialPortExpansionMap::default(),
+                &PortExpansionMap::default(),
                 &context.flat_signature_builds,
             )
             .unwrap()[&IVec3::ZERO]
@@ -4822,7 +4847,7 @@ module main {
                     select_link_signatures(
                         CompileConfig::default(),
                         &graph,
-                        &SpatialPortExpansionMap::default(),
+                        &PortExpansionMap::default(),
                         &builds,
                     )
                     .unwrap();

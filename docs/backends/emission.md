@@ -25,6 +25,10 @@ Stim emits static Clifford block-graph compilations and selected Clifford
 proxies of non-Clifford graphs. It supports linear measurement parities and
 record-controlled Pauli corrections.
 
+Reversed temporal Ports use ideal Bell preparation or measurement with
+record-controlled Pauli corrections. Static Stim export rejects explicit
+`Discard` effects; use the [VM](vm.md) for intentional postselection.
+
 Compile and emit a gallery CNOT:
 
 ::::{md-tab-set}
