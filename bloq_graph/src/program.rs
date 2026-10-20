@@ -380,7 +380,7 @@ pub struct BitBinding {
 pub struct MaterializedModuleSite {
     /// Owning module definition name.
     pub definition: String,
-    /// Dot-qualified path from the root instance.
+    /// Path from the root instance, with instance names separated by `__`.
     pub instance_path: String,
     /// Block position inside its owning definition.
     pub local_position: IVec3,
@@ -452,11 +452,11 @@ impl ModuleCertificationLimits {
         max_expanded_instances: 1_000_000,
         max_occupied_cells: 4_000_000,
         max_local_columns: 1_000_000,
-        max_boolean_nodes: 4_000_000,
+        max_boolean_nodes: 8_000_000,
         max_boolean_steps: usize::MAX,
         max_matrix_words: 16_777_216,
         max_frontier_width: 4_096,
-        max_witness_nodes: 1_000_000,
+        max_witness_nodes: 4_000_000,
         max_normalization_states: 1_000_000,
         max_guarded_domain_size: 4_096,
     };
@@ -592,6 +592,30 @@ pub enum ModuleCertificationError {
     /// Leaf certification was requested for a definition with children.
     #[error("module '{0}' contains child instances")]
     NotLeaf(String),
+    /// A distance relation needs exactly one choice for each selective block.
+    #[error("module '{module}' needs {expected} Clifford distance pins, got {actual}")]
+    CliffordDistancePinCount {
+        /// Definition being certified.
+        module: String,
+        /// Number of selective blocks.
+        expected: usize,
+        /// Number of supplied pins.
+        actual: usize,
+    },
+    /// No source-outcome assignment reaches the complete requested pin tuple.
+    #[error("module '{module}' cannot reach the requested Clifford distance pins")]
+    CliffordDistanceUnreachablePins {
+        /// Definition being certified.
+        module: String,
+    },
+    /// Structural alternatives must be explicitly projected before this oracle.
+    #[error(
+        "module '{module}' has structural branches unsupported by the Clifford distance oracle"
+    )]
+    CliffordDistanceStructuralBranches {
+        /// Definition being certified.
+        module: String,
+    },
     /// A definition uses a feature unsupported by leaf certification.
     #[error("module '{module}' uses unsupported {feature}")]
     Unsupported {
@@ -2827,7 +2851,8 @@ mod tests {
 
         let defaults = ModuleCertificationLimits::DEFAULT;
         assert_eq!(defaults.max_boolean_steps, usize::MAX);
-        assert_eq!(defaults.max_boolean_nodes, 4_000_000);
+        assert_eq!(defaults.max_boolean_nodes, 8_000_000);
+        assert_eq!(defaults.max_witness_nodes, 4_000_000);
         assert_eq!(BooleanLimits::DEFAULT.max_steps, 64_000_000);
         let mut diagram = BooleanDecisionDiagram::with_limits(defaults.boolean_limits());
         diagram.charge(512_000_001).unwrap();

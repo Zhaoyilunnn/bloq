@@ -155,6 +155,8 @@ struct PreparedProxy {
     template_pool: crate::block::LoweringTemplatePool,
 }
 
+/// Selector-free physical inventory. Selective entries retain both measurement
+/// templates; Boolean bindings and record identities belong to linked instances.
 pub(crate) struct PreparedDefinitionObject {
     name: String,
     dependencies: Vec<Arc<PreparedDefinitionObject>>,
@@ -538,7 +540,13 @@ pub struct CompileContext {
 struct CliffordProxyPins {
     pins: Vec<bool>,
     purpose: CliffordProxyPurpose,
-    source_summary: Option<Arc<ModuleSummary>>,
+    source: CliffordProxySource,
+}
+
+#[derive(Debug)]
+enum CliffordProxySource {
+    Rows(Option<Arc<ModuleSummary>>),
+    Relation(Arc<ModuleSummary>),
 }
 
 /// Which consumer requested a pinned Clifford artifact.
@@ -606,6 +614,44 @@ pub fn compile_clifford_proxy(
     pins: &[bool],
 ) -> Result<CompileArtifacts, CompileError> {
     compile_proxy(config, graph, pins, CliffordProxyPurpose::Distance)
+}
+
+/// Compile a Clifford distance oracle from the complete signed source relation.
+///
+/// Certifies all source choices before restricting to jointly reachable pins
+/// in expanded `(z, x, y)` block order. Structural branches require projection.
+/// T regions become perfect input ports and source feedback is omitted.
+/// Public rows are selected after restriction, so observable counts, indices
+/// and generator keys can differ from [`compile_clifford_proxy`].
+///
+/// # Errors
+///
+/// Returns source-certification, pin, resource-limit or physical-compilation errors.
+///
+/// # Examples
+///
+/// ```
+/// use bloq_compile::{CompileConfig, compile_clifford_distance};
+/// use bloq_graph::GalleryItem;
+/// let proxy = compile_clifford_distance(
+///     CompileConfig::new(3), &GalleryItem::T.build(), &[false],
+/// )?;
+/// bloq_stim::emit_bloq_stim(&proxy.bloq).expect("distance oracle emits static Stim");
+/// # Ok::<(), bloq_compile::CompileError>(())
+/// ```
+pub fn compile_clifford_distance(
+    config: CompileConfig,
+    graph: &BlockGraph,
+    pins: &[bool],
+) -> Result<CompileArtifacts, CompileError> {
+    let mut context = proxy_context(config);
+    let summary = context.summarize(graph, config.certification_limits())?;
+    context.clifford_proxy = Some(CliffordProxyPins {
+        pins: pins.to_vec(),
+        purpose: CliffordProxyPurpose::Distance,
+        source: CliffordProxySource::Relation(summary),
+    });
+    context.compile(graph)
 }
 
 /// Compile one seeded random static Clifford proxy path.
@@ -728,23 +774,38 @@ fn compile_pinned_clifford_proxy(
             actual: pins.len(),
         });
     }
-    static CACHE: OnceLock<crate::SharedCompileCache> = OnceLock::new();
-    // Keep proxy templates separate from real compilations. Pinning only
-    // selects one arm of a cached selective template; T proxy ports use their
-    // ordinary Port signature below, so no cached entry is site-specific.
-    let mut ctx = CompileContext::with_shared_cache(
-        config,
-        CACHE.get_or_init(crate::SharedCompileCache::new),
-    );
+    let mut ctx = proxy_context(config);
     let source_summary = program
         .map(|program| ctx.summarize(program, config.certification_limits()))
         .transpose()?;
     ctx.clifford_proxy = Some(CliffordProxyPins {
         pins: pins.to_vec(),
         purpose,
-        source_summary,
+        source: CliffordProxySource::Rows(source_summary),
     });
     ctx.compile(graph)
+}
+
+static PROXY_CACHE: OnceLock<crate::SharedCompileCache> = OnceLock::new();
+
+/// Releases cached templates, module artifacts, and summaries used by the
+/// Clifford distance and detector-slice proxy entry points.
+///
+/// These entry points share a process-wide, append-only cache. Clear it between
+/// distance or program sweeps to release retained memory. Compilations already
+/// in flight retain their templates and can finish normally.
+pub fn clear_clifford_proxy_cache() {
+    if let Some(cache) = PROXY_CACHE.get() {
+        cache.clear();
+    }
+}
+
+fn proxy_context(config: CompileConfig) -> CompileContext {
+    // Both distance presentations reuse identical physical proxy templates.
+    CompileContext::with_shared_cache(
+        config,
+        PROXY_CACHE.get_or_init(crate::SharedCompileCache::new),
+    )
 }
 
 /// Cache key for the unified signature→template map: a spatial block signature,
@@ -837,7 +898,7 @@ impl CompileContext {
         self
     }
 
-    fn check_cancellation(&self) -> Result<(), CompileError> {
+    pub(crate) fn check_cancellation(&self) -> Result<(), CompileError> {
         if let Some(token) = &self.cancellation {
             token.check()?;
         }
@@ -891,6 +952,15 @@ impl CompileContext {
         self.summaries.get_or_summarize(program, limits, Some(jobs))
     }
 
+    fn prepare_relations(
+        &self,
+        program: &BlockGraph,
+        jobs: NonZeroUsize,
+    ) -> Result<Arc<bloq_graph::PreparedModuleRelations>, ModuleCertificationError> {
+        self.summaries
+            .prepare_validated(program, self.config.certification_limits(), jobs)
+    }
+
     /// Compile a target-specific block-graph object for repeated linking.
     /// Both fixed and symbolic inputs cache their finished IR. Exact
     /// definition variants remain reusable across different root programs.
@@ -937,37 +1007,6 @@ impl CompileContext {
                 artifacts,
             })
         })
-    }
-
-    fn prepare_module_definitions(
-        &self,
-        program: &BlockGraph,
-        jobs: NonZeroUsize,
-    ) -> Result<
-        (
-            bloq_graph::LinkedModuleDefinition,
-            Vec<Arc<PreparedDefinitionObject>>,
-        ),
-        CompileError,
-    > {
-        let (definition_keys, seam_faces) = (
-            program.module_definition_cache_keys(),
-            program.module_public_seam_faces(),
-        );
-        let mut linked = bloq_graph::flatten_module_definition(program, program.root(), "")
-            .map_err(|source| ModuleCertificationError::Graph {
-                module: program.root().name.clone(),
-                source,
-            })?;
-        linked.graph = linked.graph.fix_shadowed_faces();
-        let definitions = self.compile_module_definition_objects(
-            program,
-            &linked,
-            &definition_keys,
-            &seam_faces,
-            jobs,
-        )?;
-        Ok((linked, definitions))
     }
 
     /// Link a compiled object to an independently editable Bloq snapshot.
@@ -1031,7 +1070,18 @@ impl CompileContext {
             .clifford_proxy
             .as_ref()
             .expect("Clifford proxy context");
-        let module_summary = proxy.source_summary.as_deref();
+        let module_summary = match &proxy.source {
+            CliffordProxySource::Rows(summary) => summary.as_deref(),
+            CliffordProxySource::Relation(summary) => {
+                let (source_graph, stabilizers) =
+                    summary.materialize_clifford_distance_relation(&proxy.pins)?;
+                let (graph, spatial_ports) = crate::spatial_port::expand_spatial_port_topology(
+                    &source_graph,
+                    self.config.code_distance(),
+                )?;
+                return self.proxy_preflight(graph.into_owned(), stabilizers, spatial_ports);
+            }
+        };
         let graph = graph.canonical_true_branch_view()?;
         graph.validate_source()?;
         reject_structural_proxy(&graph)?;
@@ -1066,6 +1116,15 @@ impl CompileContext {
             graph
         };
         let stabilizers = self.proxy_stabilizers(&graph, &stabilizers)?;
+        self.proxy_preflight(graph, stabilizers, spatial_ports)
+    }
+
+    fn proxy_preflight(
+        &self,
+        graph: BlockGraph,
+        stabilizers: StabilizerGenerators,
+        spatial_ports: SpatialPortExpansionMap,
+    ) -> Result<ProxyPreflight, CompileError> {
         let signatures = select_link_signatures(
             self.config,
             &graph,
@@ -1117,14 +1176,27 @@ impl CompileContext {
         })
     }
 
-    fn compile_module_definition_objects(
+    fn prepare_module_definitions(
         &self,
         program: &BlockGraph,
-        linked_root: &bloq_graph::LinkedModuleDefinition,
-        definition_keys: &std::collections::HashMap<String, String>,
-        seam_faces: &std::collections::HashMap<(String, IVec3), Vec<bloq_graph::Direction>>,
+        summary: &Arc<bloq_graph::PreparedModuleRelations>,
         jobs: NonZeroUsize,
     ) -> Result<Vec<Arc<PreparedDefinitionObject>>, CompileError> {
+        let prepared_definitions = summary.definitions();
+        let definition_keys = prepared_definitions
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name().to_owned(),
+                    definition.implementation_key().to_owned(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let prepared_by_name = prepared_definitions
+            .iter()
+            .map(|definition| (definition.name(), definition))
+            .collect::<crate::FxMap<_, _>>();
+        let seam_faces = program.module_public_seam_faces();
         let orientations_by_name = program.definition_orientations();
         let mut names = definition_keys.keys().cloned().collect::<Vec<_>>();
         names.sort_unstable();
@@ -1145,21 +1217,8 @@ impl CompileContext {
         }
         let compile_one = |name: &String| -> Result<CompiledDefinitionVariants, CompileError> {
             self.check_cancellation()?;
-            // Cache hits retain their complete definition object. Materialize
-            // descendant geometry only for a missing definition, once per build.
-            let mut linked_child;
-            let linked = if name == BlockGraph::ENTRY_MODULE {
-                linked_root
-            } else {
-                let definition = program.module(name).expect("validated definition");
-                linked_child = bloq_graph::flatten_module_definition(program, definition, "")
-                    .map_err(|source| ModuleCertificationError::Graph {
-                        module: program.root().name.clone(),
-                        source,
-                    })?;
-                linked_child.graph = linked_child.graph.fix_shadowed_faces();
-                &linked_child
-            };
+            let definition = prepared_by_name[name.as_str()];
+            let linked = definition.linked();
             let mut variants = crate::FxMap::default();
             for &orientation in &orientations_by_name[name] {
                 self.check_cancellation()?;
@@ -1175,15 +1234,12 @@ impl CompileContext {
                             .map(|position| (position, site))
                     })
                     .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-                // Native lowering plans the root's readouts again. Child
-                // interfaces still need their own C0 proof before linking.
-                if name != BlockGraph::ENTRY_MODULE {
-                    registry::certify_definition(
-                        name,
-                        &oriented_graph,
-                        &oriented_sites,
-                        self.config.certification_limits(),
-                    )?;
+                // Preparation proves each child's authored interface. Rotated
+                // time directions still need their own C0 check before linking.
+                if name != BlockGraph::ENTRY_MODULE
+                    && orientation != bloq_graph::ModuleOrientation::IDENTITY
+                {
+                    definition.certify_interface(&oriented_graph, &oriented_sites)?;
                 }
                 let graph = oriented_graph.canonical_true_branch_view()?;
                 let graph = graph.fix_shadowed_faces();
@@ -1205,7 +1261,7 @@ impl CompileContext {
                     &graph,
                     &signatures,
                     &oriented_sites,
-                    seam_faces,
+                    &seam_faces,
                     &spatial_ports,
                 )?];
                 let regions = graph.branch_regions()?;
@@ -1222,7 +1278,7 @@ impl CompileContext {
                         &projected,
                         &signatures,
                         &oriented_sites,
-                        seam_faces,
+                        &seam_faces,
                         &spatial_ports,
                     )?);
                 }
@@ -1260,7 +1316,7 @@ impl CompileContext {
             &names,
             parts_by_name,
             cached,
-            definition_keys,
+            &definition_keys,
             &orientations_by_name,
             program,
         ))
@@ -2067,12 +2123,106 @@ mod tests {
             clifford_proxy: Some(CliffordProxyPins {
                 pins: Vec::new(),
                 purpose: CliffordProxyPurpose::Distance,
-                source_summary: None,
+                source: CliffordProxySource::Rows(None),
             }),
             ..CompileContext::new(CompileConfig::default())
         };
         let resolved = ctx.proxy_stabilizers(&graph, &source).unwrap();
         assert_eq!(resolved.generators, source.generators);
+    }
+
+    #[test]
+    fn clifford_distance_checks_correlated_pins_and_limits() {
+        let graph = BlockGraph::from_blog_text(
+            "BLOG 1.0\n\n  0: Port [0,0,0]\n  1: XZ [0,0,1]\n  2: Port [2,0,0]\n  3: XZ [2,0,1]\n  4: ZXZ [4,0,0]\n  5: ZXZ [6,0,0]\n  [0,0,0] -> +Z\n  [2,0,0] -> +Z\n\n  a = measure 4\n  b = measure 5\n  resolve 1 if a ^ b\n  resolve 3 if a ^ b\n",
+        ).unwrap();
+        for pins in [[false, false], [true, true]] {
+            let result = compile_clifford_distance(CompileConfig::new(3), &graph, &pins)
+                .expect("joint controls admit both uniform choices");
+            result.bloq.validate().unwrap();
+            assert!(!result.bloq.has_conditional_membership());
+        }
+        for pins in [[false, true], [true, false]] {
+            assert!(matches!(
+                compile_clifford_distance(CompileConfig::new(3), &graph, &pins),
+                Err(CompileError::ModuleCertification(
+                    bloq_graph::ModuleCertificationError::CliffordDistanceUnreachablePins { .. }
+                ))
+            ));
+        }
+        assert!(matches!(
+            compile_clifford_distance(CompileConfig::new(3), &graph, &[false]),
+            Err(CompileError::ModuleCertification(
+                bloq_graph::ModuleCertificationError::CliffordDistancePinCount {
+                    expected: 2,
+                    actual: 1,
+                    ..
+                }
+            ))
+        ));
+        let limited = CompileConfig::new(3).with_certification_limits(
+            bloq_graph::ModuleCertificationLimits {
+                max_matrix_words: 0,
+                ..bloq_graph::ModuleCertificationLimits::DEFAULT
+            },
+        );
+        assert!(
+            compile_clifford_distance(limited, &graph, &[false, false])
+                .unwrap_err()
+                .is_resource_limited()
+        );
+    }
+
+    #[test]
+    fn clifford_distance_rejects_invalid_child_before_pinning() {
+        let graph = BlockGraph::from_text(
+            r#"BLOG 1.0
+module Child {
+    out q: data = 2
+    1: XZX [0,0,1]
+    2: Port [0,0,2] role=output
+    3: T [1,0,0]
+    4: XZX [1,0,1]
+    5: YX [1,0,2]
+    1 -> +Z
+    1 -> +X
+    3 -> +Z
+    5 -> -Z
+    mzz = measure 1 -> +X
+    resolve 5 if mzz
+}
+module main {
+    child: Child @ [0,0,0]
+    10: Z [0,0,2]
+    child.q -> 10
+}
+"#,
+        )
+        .unwrap();
+        for pin in [false, true] {
+            let error =
+                compile_clifford_distance(CompileConfig::new(3), &graph, &[pin]).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    CompileError::ModuleCertification(
+                        bloq_graph::ModuleCertificationError::Graph { ref module, .. }
+                        | bloq_graph::ModuleCertificationError::Runtime { ref module, .. }
+                    ) if module == "Child"
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clifford_distance_requires_explicit_structural_projection() {
+        assert!(matches!(
+            compile_clifford_distance(CompileConfig::new(3), &structural_branch_graph(), &[],),
+            Err(CompileError::ModuleCertification(
+                bloq_graph::ModuleCertificationError::CliffordDistanceStructuralBranches { .. }
+            ))
+        ));
     }
 
     fn single_cube_runtime_graph() -> BlockGraph {
@@ -2542,7 +2692,7 @@ mod tests {
             clifford_proxy: Some(CliffordProxyPins {
                 pins: vec![false],
                 purpose: CliffordProxyPurpose::Detslice,
-                source_summary: None,
+                source: CliffordProxySource::Rows(None),
             }),
             ..CompileContext::new(CompileConfig::default())
         };
@@ -2574,7 +2724,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_and_validate_normalizes_a_small_span_starting_at_i32_min() {
+    fn compilation_normalizes_a_small_span_starting_at_i32_min() {
         let port = ivec3(0, 0, i32::MIN);
         let cube = ivec3(0, 0, i32::MIN + 1);
         let mut graph = BlockGraph::new();
@@ -2585,6 +2735,11 @@ mod tests {
 
         ctx.compile_and_validate(&graph)
             .expect("the normalized z span is 0..=1");
+        compile_clifford_distance(CompileConfig::new(3), &graph, &[])
+            .expect("distance compilation normalizes the same span")
+            .bloq
+            .validate()
+            .unwrap();
     }
 
     #[test]
@@ -4064,6 +4219,29 @@ mod tests {
         assert_eq!(compile_to_binary(&cold, &graph), expected);
     }
 
+    #[test]
+    fn clearing_proxy_cache_releases_retained_objects_and_recompiles_identically() {
+        // A separate config keeps other concurrently running proxy tests from
+        // retaining this shard while its memory lifetime is checked.
+        let config = CompileConfig::new(3).with_certification_limits(ModuleCertificationLimits {
+            max_expanded_blocks: ModuleCertificationLimits::DEFAULT.max_expanded_blocks - 1,
+            ..ModuleCertificationLimits::DEFAULT
+        });
+        let graph = GalleryItem::XMemory.build();
+        let expected = compile_clifford_proxy(config, &graph, &[])
+            .unwrap()
+            .bloq
+            .to_binary();
+        let retained = Arc::downgrade(&proxy_context(config).cache);
+        assert!(retained.upgrade().is_some());
+
+        clear_clifford_proxy_cache();
+
+        assert!(retained.upgrade().is_none());
+        let rebuilt = compile_clifford_proxy(config, &graph, &[]).unwrap();
+        assert_eq!(rebuilt.bloq.to_binary(), expected);
+    }
+
     /// Contexts sharing one cache may compile concurrently; every output must
     /// match what a private context produces alone.
     #[test]
@@ -4335,6 +4513,198 @@ mod tests {
         assert!(Arc::ptr_eq(&first.artifacts, &second.artifacts));
     }
 
+    fn selective_module_program(kind: &str, boundary: &str, binding: &str) -> BlockGraph {
+        BlockGraph::from_text(&format!(
+            "BLOG 1.0
+module Cap {{
+  in q: data = 0
+  in basis
+  out result = m
+  0: Port [0,0,0] role=input
+  1: {kind} [0,0,1]
+  0 -> +Z
+  resolve 1 if basis
+  m = measure 1
+}}
+module main {{
+  in qa: data = 0
+  in qb: data = 2
+  out x = mx
+  out y = my
+  0: Port [0,0,-1] role=input
+  1: {boundary} [0,0,0]
+  2: Port [3,0,-1] role=input
+  3: {boundary} [3,0,0]
+  4: ZXZ [6,0,-1]
+  5: ZXZ [8,0,-1]
+  0 -> +Z
+  2 -> +Z
+  a: Cap @ [0,0,0]
+  b: Cap @ [3,0,0] rotate Z 90
+  1 -> a.q
+  3 -H> b.q
+  mx = measure 4
+  my = measure 5
+  x => a.basis
+  {binding} => b.basis
+}}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn selective_definition_inventory_matches_guarded_physical_selection() {
+        for kind in ["XY", "XZ", "YZ"] {
+            for boundary in ["ZXZ", "XZX"] {
+                let program = selective_module_program(kind, boundary, "y");
+                let context = CompileContext::new(CompileConfig::default());
+                let prepared = context.compile(&program).unwrap().bloq;
+                let definitions = cached_module_definitions(&context, &program);
+                let cap = &definitions["Cap"];
+                let bases = cap
+                    .variants
+                    .iter()
+                    .filter(|(key, _)| key.local_position == IVec3::Z)
+                    .map(|(key, info)| {
+                        assert!(matches!(info.template, TemplateRef::Selective { .. }));
+                        key.signature.boundary_basis.unwrap()
+                    })
+                    .collect::<crate::FxSet<_>>();
+                assert_eq!(bases, crate::FxSet::from_iter([Basis::X, Basis::Z]));
+                let reference = registry::compile_hierarchy_without_inventory(
+                    &CompileContext::new(CompileConfig::default()),
+                    &program,
+                )
+                .unwrap()
+                .bloq;
+                assert_eq!(
+                    prepared.to_binary(),
+                    reference.to_binary(),
+                    "{kind} {boundary}"
+                );
+                for a in [false, true] {
+                    for b in [false, true] {
+                        let pinned = prepared
+                            .pin_membership(&std::collections::BTreeMap::from([
+                                (bloq_graph::selective_selector_name(ivec3(0, 0, 2)), a),
+                                (bloq_graph::selective_selector_name(ivec3(3, 0, 2)), b),
+                            ]))
+                            .unwrap();
+                        assert!(!pinned.has_conditional_membership());
+                        pinned.validate().unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selective_definition_inventory_reuses_across_parent_bindings() {
+        let cache = crate::SharedCompileCache::new();
+        let config = CompileConfig::default();
+        let independent = selective_module_program("XZ", "ZXZ", "y");
+        let shared = selective_module_program("XZ", "XZX", "x");
+        let first_context = CompileContext::with_shared_cache(config, &cache);
+        let first = first_context.compile_object(&independent).unwrap();
+        let first_definition = cached_module_definitions(&first_context, &independent)
+            .remove("Cap")
+            .unwrap();
+        let second_context = CompileContext::with_shared_cache(config, &cache);
+        let second = second_context.compile_object(&shared).unwrap();
+        let second_definition = cached_module_definitions(&second_context, &shared)
+            .remove("Cap")
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&first.artifacts, &second.artifacts));
+        assert!(Arc::ptr_eq(&first_definition, &second_definition));
+        let first_relations = first_context
+            .prepare_relations(&independent, default_module_jobs())
+            .unwrap();
+        let second_relations = second_context
+            .prepare_relations(&shared, default_module_jobs())
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first_relations, &second_relations));
+        let cap = |relations: &Arc<bloq_graph::PreparedModuleRelations>| {
+            relations
+                .definitions()
+                .into_iter()
+                .find(|definition| definition.name() == "Cap")
+                .unwrap()
+        };
+        assert!(Arc::ptr_eq(&cap(&first_relations), &cap(&second_relations)));
+        let selector_names =
+            [ivec3(0, 0, 2), ivec3(3, 0, 2)].map(bloq_graph::selective_selector_name);
+        let choices = |a, b| {
+            std::collections::BTreeMap::from([
+                (selector_names[0].clone(), a),
+                (selector_names[1].clone(), b),
+            ])
+        };
+        first
+            .artifacts
+            .bloq
+            .pin_membership(&choices(false, true))
+            .unwrap();
+        assert!(matches!(
+            second.artifacts.bloq.pin_membership(&choices(false, true)),
+            Err(bloq_ir::MembershipPinError::UnreachableAssignment)
+        ));
+        for selected in [false, true] {
+            let pinned = second
+                .artifacts
+                .bloq
+                .pin_membership(&choices(selected, selected))
+                .unwrap();
+            let instances = [ivec3(0, 0, 2), ivec3(3, 0, 2)].map(|position| {
+                let (_, node) = pinned
+                    .quantum_nodes()
+                    .find(|(id, _)| {
+                        pinned[*id]
+                            .block_members()
+                            .iter()
+                            .any(|block| block.pos == position)
+                    })
+                    .unwrap();
+                assert_eq!(node.instances.len(), 1);
+                node.instances[0].id
+            });
+            assert_ne!(instances[0], instances[1]);
+            pinned.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn selective_definition_inventory_preserves_feedback_and_output_frames() {
+        for (label, graph) in [
+            ("T", GalleryItem::T.build()),
+            ("phase gradient", GalleryItem::PhaseGradientK4.build()),
+            ("terminal branch", mixed_structural_dynamic_graph()),
+        ] {
+            let program = graph.with_inferred_interface().unwrap();
+            let context = CompileContext::new(CompileConfig::default());
+            let prepared = context.compile(&program).unwrap().bloq;
+            let reference = registry::compile_hierarchy_without_inventory(
+                &CompileContext::new(CompileConfig::default()),
+                &program,
+            )
+            .unwrap()
+            .bloq;
+            assert_eq!(prepared.to_binary(), reference.to_binary(), "{label}");
+            assert!(!prepared.output_frames().is_empty());
+            assert!(
+                cached_module_definitions(&context, &program)
+                    .values()
+                    .any(|definition| {
+                        definition
+                            .variants
+                            .values()
+                            .any(|info| info.template.is_selective())
+                    }),
+                "{label} needs selective inventory coverage"
+            );
+        }
+    }
+
     #[test]
     fn module_link_reports_a_missing_physical_variant() {
         let mut graph = BlockGraph::new();
@@ -4446,6 +4816,14 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, CompileError::Module(_)), "{error:?}");
         assert!(error.to_string().contains("missing_port"), "{error}");
+        let error = CompileContext::new(CompileConfig::default())
+            .summarize(&graph, ModuleCertificationLimits::DEFAULT)
+            .unwrap_err();
+        assert!(
+            matches!(error, ModuleCertificationError::Graph { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("missing_port"), "{error}");
     }
 
     #[test]
@@ -4537,6 +4915,23 @@ module main {
                 parallel.bloq.to_binary(),
                 "{label}"
             );
+            if program.has_continuing_branches() {
+                let orientations = program.definition_orientations();
+                for (name, implementation) in program.module_definition_cache_keys() {
+                    assert!(
+                        serial_context
+                            .cache
+                            .definition_object(&DefinitionObjectCacheKey {
+                                implementation,
+                                orientations: orientations[&name].clone(),
+                            })
+                            .is_none(),
+                        "continuing hierarchies retain guarded physical contexts"
+                    );
+                }
+            } else {
+                assert!(!cached_module_definitions(&serial_context, &program).is_empty());
+            }
         }
     }
 

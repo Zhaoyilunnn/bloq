@@ -48,18 +48,43 @@ pub fn selective_selector_name(position: IVec3) -> String {
     format!("selective [{},{},{}]", position.x, position.y, position.z)
 }
 
-/// Availability for one fixed set of known outcomes. Decision nodes may be
-/// appended while querying, but the query must end before collection renumbers
-/// them or another outcome becomes known.
+/// Availability as known outcomes grow. Refresh after collection before querying.
 pub(crate) struct AvailabilityQuery {
     // None is an unknown outcome. A known outcome needs no further input;
     // a structural variable instead requires its source condition.
     requirements: Vec<Option<DecisionId>>,
+    outcomes: crate::FxHashMap<String, usize>,
+    generation: u64,
     values: crate::FxHashMap<DecisionId, bool>,
     pending: Vec<DecisionId>,
 }
 
 impl AvailabilityQuery {
+    pub(crate) fn learn<'a>(
+        &mut self,
+        names: impl IntoIterator<Item = &'a str>,
+        diagram: &mut BooleanDecisionDiagram,
+    ) -> Result<(), BooleanResourceError> {
+        debug_assert_eq!(self.generation, diagram.generation());
+        let mut indices = Vec::new();
+        for name in names {
+            diagram.charge(1)?;
+            if let Some(&index) = self.outcomes.get(name)
+                && self.requirements[index].is_none()
+            {
+                indices.push(index);
+            }
+        }
+        if !indices.is_empty() {
+            diagram.charge(self.values.len())?;
+            self.values.retain(|_, available| *available);
+            for index in indices {
+                self.requirements[index] = Some(DECISION_TRUE);
+            }
+        }
+        Ok(())
+    }
+
     fn cached(&self, root: DecisionId) -> Option<bool> {
         if root.0 < 2 {
             Some(true)
@@ -73,6 +98,7 @@ impl AvailabilityQuery {
         root: DecisionId,
         diagram: &mut BooleanDecisionDiagram,
     ) -> Result<bool, BooleanResourceError> {
+        debug_assert_eq!(self.generation, diagram.generation());
         if let Some(value) = self.cached(root) {
             return Ok(value);
         }
@@ -614,7 +640,7 @@ impl AuthoredGeometry {
 /// A shared decision diagram over source measurement variables, with local
 /// structural alternatives. It never lists the full joint branch domain.
 #[doc(hidden)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GuardedTopology {
     pub source: BlockGraph,
     pub diagram: BooleanDecisionDiagram,
@@ -649,6 +675,55 @@ impl GuardedTopology {
                 .iter()
                 .filter(|variable| matches!(variable, GuardedVariable::Branch { .. }))
                 .count()
+    }
+
+    /// Solve one complete variable assignment that selects every branch arm
+    /// except `absent`. Returns `None` when that arm selection is unreachable.
+    pub(crate) fn branch_selection_values(
+        &self,
+        absent: &rustc_hash::FxHashSet<IVec3>,
+    ) -> Result<Option<Vec<bool>>, BooleanResourceError> {
+        if self.branches.is_empty() {
+            return Ok(Some(vec![false; self.variables.len()]));
+        }
+        let mut diagram = self.diagram.clone();
+        diagram.charge(self.variables.len().saturating_add(self.branches.len()))?;
+        let branch_values = self
+            .branches
+            .iter()
+            .map(|(name, position, _)| (name.as_str(), !absent.contains(position)))
+            .collect::<HashMap<_, _>>();
+        // The branch-vector domain does not link each branch to its source outcomes.
+        let conditions = self
+            .variables
+            .iter()
+            .filter_map(|variable| match variable {
+                GuardedVariable::Branch { name, condition } => {
+                    Some(if branch_values[name.as_str()] {
+                        Ok(*condition)
+                    } else {
+                        diagram.negate(*condition)
+                    })
+                }
+                GuardedVariable::Outcome(_) => None,
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some(outcomes) = diagram.conjunction_witness(&conditions)? else {
+            return Ok(None);
+        };
+        let outcome = |index| outcomes.get(&index).copied().unwrap_or(false);
+        Ok(Some(
+            self.variables
+                .iter()
+                .enumerate()
+                .map(|(index, variable)| match variable {
+                    GuardedVariable::Branch { condition, .. } => {
+                        self.diagram.evaluate(*condition, outcome)
+                    }
+                    GuardedVariable::Outcome(_) => outcome(index),
+                })
+                .collect(),
+        ))
     }
 
     /// Collect only while no external stage retains unlisted decision ids.
@@ -1091,9 +1166,30 @@ impl GuardedTopology {
                     GuardedVariable::Branch { condition, .. } => Some(*condition),
                 })
                 .collect(),
+            outcomes: self
+                .variables
+                .iter()
+                .enumerate()
+                .filter_map(|(index, variable)| match variable {
+                    GuardedVariable::Outcome(name) => Some((name.clone(), index)),
+                    GuardedVariable::Branch { .. } => None,
+                })
+                .collect(),
+            generation: self.diagram.generation(),
             values: Default::default(),
             pending: Vec::new(),
         })
+    }
+
+    pub(crate) fn refresh_availability(
+        &mut self,
+        query: &mut AvailabilityQuery,
+        known: &BTreeSet<String>,
+    ) -> Result<(), BooleanResourceError> {
+        if query.generation != self.diagram.generation() {
+            *query = self.availability(known)?;
+        }
+        Ok(())
     }
 
     /// Returns one complete branch assignment satisfying `guard`.
@@ -1195,6 +1291,123 @@ impl GuardedTopology {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn branch_selection_values_keep_shared_branch_and_selective_outcomes_consistent() {
+        for condition in ["enable", "!enable", "enable ^ toggle"] {
+            let program = crate::BlockGraph::from_text(&format!(
+                r"BLOG 1.0
+module main {{
+  in enable
+  in toggle
+  in q_in: data = 0
+  out q_out: data = 1
+  in probe: data = 4
+  0: Port [0,0,0] role=input
+  1: Port [0,0,2] role=output
+  4: Port [3,0,0] role=input
+  5: XZX [3,0,1]
+  6: XZ [3,0,2]
+  4 -> +Z
+  5 -> +Z
+  branch b {{
+    false {{
+      2: XZX [0,0,1]
+      0 -H> +Z
+      [0,0,1] -H> +Z
+    }}
+    true {{
+      3: ZXZ [0,0,1]
+      0 -> +Z
+      [0,0,1] -> +Z
+    }}
+  }}
+  selected = {condition}
+  resolve b if selected
+  resolve 6 if selected
+}}"
+            ))
+            .unwrap();
+            let graph = program
+                .materialize_root_graph()
+                .unwrap()
+                .fix_shadowed_faces();
+            let topology =
+                crate::GuardedTopology::new(&graph, crate::ModuleCertificationLimits::DEFAULT)
+                    .unwrap();
+            for selected in [true, false] {
+                let absent = topology
+                    .branches
+                    .iter()
+                    .filter_map(|(_, position, _)| (!selected).then_some(*position))
+                    .collect();
+                let values = topology.branch_selection_values(&absent).unwrap().unwrap();
+                let evaluate = |root| topology.diagram.evaluate(root, |index| values[index]);
+                assert_eq!(evaluate(topology.branches[0].2), selected);
+                assert_eq!(evaluate(topology.resolves[0].1), selected, "{condition}");
+                let outcomes = topology
+                    .variables
+                    .iter()
+                    .zip(&values)
+                    .filter_map(|(variable, &value)| match variable {
+                        crate::GuardedVariable::Outcome(name) => Some((name.as_str(), value)),
+                        crate::GuardedVariable::Branch { .. } => None,
+                    })
+                    .collect::<std::collections::HashMap<_, _>>();
+                assert_eq!(
+                    topology.evaluate_source(topology.branches[0].2, |name| outcomes[name]),
+                    selected,
+                    "{condition}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn branch_selection_values_solve_correlated_conditions_within_the_boolean_budget() {
+        let source = include_str!("../../docs/fixtures/conditional_cz_strip.blog")
+            .replace("resolve cz1 if enable1", "resolve cz1 if !enable0");
+        let program = crate::BlockGraph::from_text(&source).unwrap();
+        let graph = program.root().local_body().fix_shadowed_faces();
+        let limits = crate::ModuleCertificationLimits {
+            max_boolean_steps: 1_000_000,
+            ..crate::ModuleCertificationLimits::DEFAULT
+        };
+        let mut topology = crate::GuardedTopology::new(&graph, limits).unwrap();
+        for mask in 0..8 {
+            let absent = topology
+                .branches
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (_, position, _))| {
+                    (mask & (1 << index) == 0).then_some(*position)
+                })
+                .collect();
+            let values = topology.branch_selection_values(&absent).unwrap();
+            assert_eq!(values.is_some(), (mask & 1 != 0) != (mask & 2 != 0));
+            if let Some(values) = values {
+                for (index, (_, _, root)) in topology.branches.iter().enumerate() {
+                    assert_eq!(
+                        topology.diagram.evaluate(*root, |index| values[index]),
+                        mask & (1 << index) != 0
+                    );
+                }
+            }
+        }
+        // An unreachable all-true view still uses the existing static fallback.
+        program.summarize_root(limits).unwrap();
+        topology
+            .diagram
+            .charge(limits.max_boolean_steps - topology.diagram.steps())
+            .unwrap();
+        assert_eq!(
+            topology
+                .branch_selection_values(&rustc_hash::FxHashSet::default())
+                .unwrap_err()
+                .resource,
+            "Boolean work steps"
+        );
+    }
+
     #[test]
     fn selector_image_counter_overflow_is_a_resource_failure() {
         let mut visited = usize::MAX - 1;
@@ -1309,6 +1522,54 @@ mod tests {
             drop(query);
             topology.collect_garbage(roots.iter_mut());
         }
+    }
+
+    #[test]
+    fn availability_learns_outcomes_and_refreshes_after_collection() {
+        let mut topology =
+            GuardedTopology::new(&BlockGraph::new(), ModuleCertificationLimits::DEFAULT).unwrap();
+        topology
+            .diagram
+            .make_node(99, DECISION_FALSE, DECISION_TRUE)
+            .unwrap();
+        let a = topology
+            .diagram
+            .make_node(0, DECISION_FALSE, DECISION_TRUE)
+            .unwrap();
+        let b = topology
+            .diagram
+            .make_node(1, DECISION_FALSE, DECISION_TRUE)
+            .unwrap();
+        let condition = topology.diagram.apply(BooleanOp::Xor, a, b).unwrap();
+        topology.variables = vec![
+            GuardedVariable::Outcome("a".into()),
+            GuardedVariable::Outcome("b".into()),
+            GuardedVariable::Branch {
+                name: "choice".into(),
+                condition,
+            },
+        ];
+        let branch = topology
+            .diagram
+            .make_node(2, DECISION_FALSE, DECISION_TRUE)
+            .unwrap();
+        let mut roots = [a, b, branch];
+        let known = BTreeSet::from(["a".into()]);
+        let mut query = topology.availability(&known).unwrap();
+        assert!(query.available(a, &mut topology.diagram).unwrap());
+        assert!(!query.available(b, &mut topology.diagram).unwrap());
+        assert!(!query.available(branch, &mut topology.diagram).unwrap());
+        assert!(topology.collect_garbage(roots.iter_mut()) > 0);
+        topology.refresh_availability(&mut query, &known).unwrap();
+        assert!(query.available(roots[0], &mut topology.diagram).unwrap());
+        assert!(!query.available(roots[1], &mut topology.diagram).unwrap());
+        assert!(!query.available(roots[2], &mut topology.diagram).unwrap());
+        query.learn(["b"], &mut topology.diagram).unwrap();
+        let spent = topology.diagram.steps();
+        assert!(query.available(roots[0], &mut topology.diagram).unwrap());
+        assert_eq!(topology.diagram.steps(), spent, "known roots remain cached");
+        assert!(query.available(roots[1], &mut topology.diagram).unwrap());
+        assert!(query.available(roots[2], &mut topology.diagram).unwrap());
     }
 
     #[test]

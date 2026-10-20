@@ -95,11 +95,13 @@ configuration, compilation reuses it.
 
 On a cache miss, a hierarchical graph is prepared definition by definition:
 
-1. **Reuse.** A definition variant compiled earlier for the same configuration
-   and orientation is reused, including across different root programs.
-2. **Link.** The root geometry is linked once. Only missing definition variants
-   materialize descendant geometry, join connected ports, and qualify action
-   names by instance path.
+1. **Reuse.** Logical definition relations are shared independently of physical
+   configuration; their keys include transitive definitions and certification
+   limits. Physical definition variants are shared within their configuration
+   and orientation. Both can be reused across different root programs.
+2. **Link.** Each prepared definition retains its linked graph and qualified
+   instance names. Certification, DAG inspection, and physical preparation reuse
+   that graph. Each instance still owns its outcome names and physical records.
 3. **Certify.** Each child definition's public interface is checked: every
    named readout must close before its live outputs. The root is checked again
    after composition, because a new connection can make a locally valid
@@ -112,15 +114,20 @@ authoring model it implements.
 ## 3. Correlations
 
 This stage computes the logical side of the program. It first builds the
-**guarded topology**: the reachable assignments of every selector and
-structural branch, and the local shape of each block under each assignment.
+**guarded topology**: shared Boolean functions describing reachability, and
+the locally reachable neighborhood variants of each block.
 Reachability here describes Boolean control, not the probability of a quantum
 outcome. If one selector is $a$ and another is $\neg a$, the planner does not
 treat all four joint choices as reachable.
 
-The general composed-surface planner builds the correlation space by seam
-elimination with Boolean-guarded coefficients, plans named readouts in causal
-waves, and derives terminal frame equations. It produces these recipes:
+The composed-surface planner reuses compatible definition relations and closes
+parent seams with Boolean-guarded coefficients. Public module summaries derive
+their signed presentation from the same complete relation; production prepares
+the factored relation directly without computing certificate phases. Signed
+summary construction and placement map raw support directly and replay exact
+local witnesses for phases. Public boundary rows share the complete certificate's
+storage. After composition, the planner selects named readouts in causal waves
+and derives terminal frame equations:
 
 | Recipe | Contents |
 | --- | --- |
@@ -171,6 +178,14 @@ holds:
 A selective cap has one template per basis. A T block has cultivation and
 escape templates, or the configured ideal preparation.
 
+Hierarchies without continuing branches retain a physical inventory per
+definition, including both arms of each selective cap. Linking chooses entries
+using the actual connectivity, orientation, boundary basis, and component
+schedule. The inventory is reusable across parent programs with different
+classical bindings: each instance binds its selector and receives its own
+measurement records during guarded assembly. Continuing branches keep their
+local guarded physical contexts.
+
 **Place instances.** An instance places a template at an offset for one source
 block. Two instances of the same template share circuit data but own distinct
 measurement records. Structural branches become guarded instance membership
@@ -195,6 +210,24 @@ pattern and asks that instance's gateway for the records that realize it. The
 records of all blocks combine into one complete `Observable` node per named
 readout or output axis. That node carries both the raw parity and the
 corrected value. The decoder estimates the difference between them.
+
+Named readouts and output frames preserve the authored physical outcome
+convention; lowering adds no separate tensor-sign bit. Closed logical
+observables absorb their gateway transport offsets into the reference parity.
+The Clifford proxy also retains public observable references for its frame
+equations: temporal-Hadamard offsets are collected together with pipe records
+and combined with spatial wall offsets. These references are distinct from
+the signed correlation certificate described in
+[Correlation Surfaces](correlation-surfaces.md#signs).
+
+Rust's `compile_clifford_proxy` preserves source generator selection through
+selective fills. `compile_clifford_distance` certifies the full guarded source,
+restricts its signed relation to jointly reachable pins, then selects fixed
+readouts; observable counts, indices and generator keys can differ. Both share
+physical templates and detector composition. Pins follow expanded `(z, x, y)`
+block order, and structural branches require explicit projection. These distance
+oracles replace T regions with perfect input ports and omit source feedback;
+check the original program with the logical or physical execution oracles.
 
 The source's classical behavior becomes IR nodes:
 
@@ -229,3 +262,27 @@ Finalization turns the assembled pieces into one program:
    same physical qubit at the same time.
 
 The result records the code distance and construction convention as metadata.
+
+## Measuring reuse
+
+The source-planner probe separates topology construction, relation composition,
+and causal readout planning, and reports computed and reused seam equations:
+
+```sh
+cargo run --release --locked -p bloq_graph --example profile_source_planner -- 32
+```
+
+The argument selects an adder width. Use `yoke:32` for a flat-graph control or
+`file:program.blog` for an authored hierarchy. Definition preparation is reported
+separately; the uncached reference excludes definition certification, so its
+total is not a complete cold-compiler baseline.
+
+The selective inventory benchmark compares cold compilation, warm block
+templates, and reused definitions under changed parent bindings:
+
+```sh
+cargo bench --locked -p bloq_compile --bench bench -- selective-definition-inventory
+```
+
+Cache-warming setup is outside the timed compilation iterations. Instance
+mapping, selector binding, and physical record allocation still run in each case.

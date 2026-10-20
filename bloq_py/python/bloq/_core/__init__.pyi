@@ -2005,8 +2005,11 @@ class Bloq:
         Examples:
             >>> import bloq
             >>> program = bloq.compile(bloq.GalleryItem.X_MEMORY.load(), distance=3)
-            >>> sorted(program.stable_key_map().values())
-            [0, 2]
+            >>> keys = program.stable_key_map()
+            >>> len(keys)
+            2
+            >>> all(program.node(node_id) is not None for node_id in keys.values())
+            True
         """
     def resolve_classical(self, node: builtins.int, *, output: ObservableOutput = ObservableOutput.Corrected, pins: typing.Optional[builtins.bool] = None, forced_observables: typing.Optional[typing.Mapping[builtins.int, builtins.bool]] = None) -> ClassicalResolution:
         r"""
@@ -5469,7 +5472,8 @@ def _run_cli(args: typing.Sequence[builtins.str]) -> builtins.int:
 
 def clear_compile_cache() -> None:
     r"""
-    Drops every circuit template cached by `compile`, releasing their memory.
+    Drops templates, module artifacts, and summaries cached by `compile` and
+    Clifford proxy compilation, releasing their memory.
 
     `compile` caches templates process-wide and never evicts them, so a process
     that compiles at many code distances — a distance sweep, say — keeps every
