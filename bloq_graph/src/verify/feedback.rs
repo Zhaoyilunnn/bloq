@@ -209,9 +209,6 @@ pub enum FeedbackInferenceError {
     /// Checked dyadic arithmetic overflowed or lost exactness.
     #[error("dyadic comparison exceeded its checked arithmetic range or lost precision")]
     ArithmeticLimit,
-    /// Existing readouts do not establish a signed C0 convention.
-    #[error("cannot establish the existing signed C0 readout convention for {0:?}")]
-    ReadoutConventionUnavailable(String),
 }
 
 /// Derives additional Pauli feedback for an existing realization.
@@ -287,7 +284,7 @@ pub fn infer_feedback_with(
         .into_iter()
         .collect::<Vec<_>>();
     let count = checked_count(names.len(), options.max_branches, "named branches")?;
-    validate_records(graph, options.max_branches)?;
+    check_branch_limit(graph, options.max_branches)?;
     let verifier = make_verifier(graph, options)?;
     let preparation = options
         .preparation
@@ -414,7 +411,7 @@ impl FeedbackProblem<'_> {
         let mut combined = candidate.actions();
         combined.extend(output.iter().cloned());
         candidate.set_actions(combined)?;
-        validate_records(&candidate, self.options.max_branches)?;
+        check_branch_limit(&candidate, self.options.max_branches)?;
         let remaining = self.frames(&make_verifier(&candidate, self.options)?)?;
         if remaining.iter().flatten().any(|pauli| *pauli != Pauli::I) {
             return Err(FeedbackInferenceError::EmissionMismatch);
@@ -526,7 +523,7 @@ impl FeedbackProblem<'_> {
                 let result = candidate
                     .set_actions(actions)
                     .map_err(FeedbackInferenceError::from)
-                    .and_then(|()| validate_records(&candidate, self.options.max_branches))
+                    .and_then(|()| check_branch_limit(&candidate, self.options.max_branches))
                     .and_then(|()| make_verifier(&candidate, self.options))
                     .and_then(|verifier| self.complete(&candidate, &verifier, additions));
                 match result {
@@ -566,27 +563,21 @@ fn make_verifier(
     })
 }
 
-fn validate_records(graph: &BlockGraph, limit: usize) -> Result<(), FeedbackInferenceError> {
-    graph.validate()?;
+/// Bounds structural branches before the verifier, which validates the
+/// source, builds one projection per reachable arm.
+fn check_branch_limit(graph: &BlockGraph, limit: usize) -> Result<(), FeedbackInferenceError> {
     if graph.branch_regions()?.is_empty() {
-        graph
-            .stabilizers()?
-            .validate_measurements_close_before_outputs_with_limit(limit)?;
-    } else {
-        let projections = graph.branch_projections_up_to(limit.saturating_add(1))?;
-        if projections.len() > limit {
-            return Err(FeedbackInferenceError::Limit {
-                phase: "structural branches",
-                observed: projections.len(),
-                limit,
-            });
-        }
-        for projection in projections {
-            projection
-                .graph()
-                .stabilizers()?
-                .validate_measurements_close_before_outputs_with_limit(limit)?;
-        }
+        return Ok(());
+    }
+    let projections = graph
+        .branch_assignments_up_to(limit.saturating_add(1))?
+        .len();
+    if projections > limit {
+        return Err(FeedbackInferenceError::Limit {
+            phase: "structural branches",
+            observed: projections,
+            limit,
+        });
     }
     Ok(())
 }

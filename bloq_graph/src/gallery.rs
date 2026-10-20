@@ -472,7 +472,7 @@ mod tests {
 
                 for block in graph.blocks().filter(|block| block.kind().is_port()) {
                     let mut span = Vec::new();
-                    for generator in &stabilizers.generators {
+                    for generator in &stabilizers {
                         let mut bits = *generator
                             .stabilizer
                             .port_stabilizer
@@ -509,14 +509,9 @@ mod tests {
                 .build()
                 .materialize_root_graph()
                 .expect("gallery flat projection");
-            let stabilizers = graph.stabilizers().unwrap();
-            let zx = &stabilizers.zx_graph;
-            let rows = stabilizers
-                .generators
-                .iter()
-                .map(|generator| &generator.stabilizer.paulis)
-                .chain(stabilizers.auxiliary_rows())
-                .collect::<Vec<_>>();
+            let zx = &crate::ZXGraph::try_from(&graph).unwrap();
+            let table = zx.to_external_generator_table();
+            let rows = table.iter().collect::<Vec<_>>();
             let (outputs, inputs): (Vec<usize>, Vec<usize>) = zx
                 .nodes()
                 .iter()
@@ -580,62 +575,6 @@ mod tests {
         }
     }
 
-    /// Every gadget record has a canonical surface below its output ports.
-    #[test]
-    fn gate_gadget_records_close_below_their_outputs() {
-        for entry in GATE_GADGETS {
-            let graph = entry
-                .build()
-                .materialize_root_graph()
-                .expect("gallery flat projection");
-            let stabilizers = graph.stabilizers().unwrap();
-            let zx = &stabilizers.zx_graph;
-            for generator in &stabilizers.generators {
-                let Some(name) = generator.measurement_name() else {
-                    continue;
-                };
-                let reached = zx
-                    .nodes()
-                    .iter()
-                    .filter(|node| node.is_output_port(zx))
-                    .filter(|node| generator.stabilizer.paulis.get(node.id) != Pauli::I)
-                    .map(|node| node.pos)
-                    .collect::<Vec<_>>();
-                assert!(
-                    reached.is_empty(),
-                    "{} record {name} reaches output ports {reached:?}",
-                    entry.id()
-                );
-            }
-        }
-    }
-
-    /// Universal-gadget fixing rows do not touch their interfaces.
-    #[test]
-    fn universal_gate_gadget_fixings_close_off_their_ports() {
-        for &entry in &GATE_GADGETS[..4] {
-            let stabilizers = entry
-                .build()
-                .materialize_root_graph()
-                .expect("gallery flat projection")
-                .stabilizers()
-                .unwrap();
-            let zx = &stabilizers.zx_graph;
-            for generator in &stabilizers.generators {
-                if generator.kind.is_selective_fixing() {
-                    assert!(
-                        zx.nodes()
-                            .iter()
-                            .filter(|node| node.kind.is_port())
-                            .all(|node| generator.stabilizer.paulis.get(node.id) == Pauli::I),
-                        "{} fixing reaches a port",
-                        entry.id()
-                    );
-                }
-            }
-        }
-    }
-
     /// Temporal stacks keep deadlines and add no backward dependency.
     #[test]
     fn stacked_gadgets_keep_deadlines_and_forward_dependencies() {
@@ -683,15 +622,18 @@ mod tests {
             composite
                 .validate()
                 .unwrap_or_else(|err| panic!("{label}: {err}"));
-            let (composite, stabilizers) = composite
+            let composite = composite
                 .analyze_actions()
                 .unwrap_or_else(|err| panic!("{label}: {err}"));
-            let zx = &stabilizers.zx_graph;
-            for generator in &stabilizers.generators {
-                let Some(name) = generator.measurement_name() else {
+            let zx = &crate::ZXGraph::from_block_graph_for_analysis(&composite).unwrap();
+            for node in composite.action_graph().ordered_nodes() {
+                let Action::Measure { name, .. } = &node.action else {
                     continue;
                 };
-                let stabilizer = &generator.stabilizer;
+                let stabilizer = node
+                    .measurement_stabilizer
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{label}: {name} has no surface"));
                 assert!(
                     zx.nodes()
                         .iter()
@@ -772,7 +714,6 @@ mod tests {
         graph
             .stabilizers()
             .unwrap()
-            .generators
             .iter()
             .filter_map(|generator| {
                 let name = generator.measurement_name()?;

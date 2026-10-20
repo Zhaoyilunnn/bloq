@@ -232,7 +232,7 @@ fn named_hadamard_and_spatial_records_survive_storage_reordering() {
             MeasureTarget::Node(IVec3::X + IVec3::Z),
         ],
     ] {
-        let mut source = GalleryItem::CZSpatialH.build().flatten().unwrap();
+        let source = GalleryItem::CZSpatialH.build().flatten().unwrap();
         let actions = targets
             .into_iter()
             .enumerate()
@@ -241,12 +241,12 @@ fn named_hadamard_and_spatial_records_survive_storage_reordering() {
                 name: format!("m{index}"),
             })
             .collect::<Vec<_>>();
-        source.set_actions(actions.clone()).unwrap();
+        // The open source's records reach its outputs until a fill closes them.
         let filled = source
             .filled_graphs()
             .unwrap()
             .into_iter()
-            .find(|graph| graph.actions().len() == actions.len())
+            .find_map(|mut graph| graph.set_actions(actions.clone()).is_ok().then_some(graph))
             .expect("a fill supports every named record");
         for reversed in [false, true] {
             let mut graph = BlockGraph::new();
@@ -1037,14 +1037,11 @@ fn feedback_multi_target_even_parity_does_not_flip_observable() {
     // targets. If derivation ever reshapes this, the test stops covering the
     // even-count fold and must be revisited.
     let stabilizers = graph.stabilizers().expect("stabilizers derive");
-    assert_eq!(stabilizers.generators.len(), 1, "one tracked generator");
-    assert!(stabilizers.generators[0].is_measurement());
+    assert_eq!(stabilizers.len(), 1, "one tracked generator");
+    assert!(stabilizers[0].is_measurement());
     for target in [IVec3::new(0, 0, 0), IVec3::new(0, 1, 0)] {
         assert_eq!(
-            stabilizers.generators[0]
-                .stabilizer
-                .interior_nodes
-                .get(&target),
+            stabilizers[0].stabilizer.interior_nodes.get(&target),
             Some(&Pauli::X),
             "the seam surface carries X at feedback target {target}",
         );
