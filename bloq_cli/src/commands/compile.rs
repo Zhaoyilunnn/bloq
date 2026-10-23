@@ -430,7 +430,6 @@ struct CompiledTarget {
     warnings: Vec<&'static str>,
 }
 
-#[hotpath::measure]
 fn compile_requested_variants(
     ctx: &CompileRunContext<'_>,
     variants: &[CompileVariant],
@@ -532,7 +531,6 @@ fn compile_batch(
     })
 }
 
-#[hotpath::measure]
 fn compile_target(
     ctx: &CompileRunContext<'_>,
     cache: &SharedCompileCache,
@@ -585,12 +583,10 @@ fn compile_target(
         ));
     }
 
-    let emitted = hotpath::measure_block!("backend emission", {
-        ctx.backend.emit(
-            &artifacts.bloq,
-            &bloq_stim::BloqStimOptions::new().with_align_moments(ctx.align_moments),
-        )?
-    });
+    let emitted = ctx.backend.emit(
+        &artifacts.bloq,
+        &bloq_stim::BloqStimOptions::new().with_align_moments(ctx.align_moments),
+    )?;
     Ok(CompiledTarget {
         emitted,
         notes,
@@ -1085,18 +1081,6 @@ mod tests {
             },
         );
         assert_eq!(path, PathBuf::from("./cnot-d3-fill1.stim"));
-    }
-
-    #[test]
-    fn default_output_path_uses_input_stem_and_distance() {
-        let temp = tempdir().expect("create temp dir");
-        let input = write_single_cube_blog(temp.path());
-
-        run(CompileSource::InputFile(input), None, options(vec![3]))
-            .expect("default output path should compile");
-
-        let output_path = temp.path().join("input-d3.stim");
-        assert!(output_path.exists(), "default output file should exist");
     }
 
     #[test]

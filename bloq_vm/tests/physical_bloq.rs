@@ -7,7 +7,7 @@
 //! * spatial-Hadamard walls — hand-built graphs (hub arm shapes, parallel
 //!   walls, the rejected quarter turn) that are not registry fixtures;
 //! * measurement-alias resolution across multi-instance lattice surgery;
-//! * `T`-block region execution and the exact per-output Pauli frames, incl.
+//! * adaptive `T`-gate execution and the exact per-output Pauli frames, incl.
 //!   selector-arm signs and non-linear resolve conditions;
 //! * `Feedback` row semantics.
 //!
@@ -29,7 +29,7 @@ use common::choi::exact::ExactChoi;
 fn compiled_case(name: &str, distance: u32) -> (CompileReadyCase, bloq_compile::Bloq) {
     let test_case = find_test_case(name).expect("case exists in the registry");
     let case = CompileReadyCase::from_test_case(test_case).expect("case builds");
-    let ctx = CompileContext::new(CompileConfig::new(distance));
+    let ctx = CompileContext::new(CompileConfig::new(distance).with_prepare_t_with_mpps(true));
     let bloq = ctx
         .compile(&case.graph)
         .expect("graph compiles to a Bloq")
@@ -110,7 +110,7 @@ fn prepared_rotated_yoke_preserves_source_choi_correlations(
         / norm;
     assert!((expected - 1.0).abs() < 1e-9);
 
-    let bloq = CompileContext::new(CompileConfig::new(3))
+    let bloq = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true))
         .compile(&graph)
         .unwrap()
         .bloq;
@@ -175,7 +175,7 @@ fn junction_feedback_uses_the_same_source_wire_in_graph_and_module_frames() {
         1 -> +X
         feedback Z 1
     ";
-    let compiler = CompileContext::new(CompileConfig::new(3));
+    let compiler = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     for direction in [" -> +Z", ""] {
         let graph = BlockGraph::from_blog_text(
             &source.replace("feedback Z 1", &format!("feedback Z 1{direction}")),
@@ -196,7 +196,7 @@ fn assert_spatial_hadamard_is_physical(
     label: &str,
     expected_observables: Option<usize>,
 ) {
-    let ctx = CompileContext::new(CompileConfig::new(distance));
+    let ctx = CompileContext::new(CompileConfig::new(distance).with_prepare_t_with_mpps(true));
     let bloq = ctx
         .compile_and_validate(graph)
         .unwrap_or_else(|error| panic!("{label} d{distance}: {error}"))
@@ -232,7 +232,7 @@ fn named_hadamard_and_spatial_records_survive_storage_reordering() {
             MeasureTarget::Node(IVec3::X + IVec3::Z),
         ],
     ] {
-        let mut source = GalleryItem::CZSpatialH.build().flatten().unwrap();
+        let source = GalleryItem::CZSpatialH.build().flatten().unwrap();
         let actions = targets
             .into_iter()
             .enumerate()
@@ -241,12 +241,12 @@ fn named_hadamard_and_spatial_records_survive_storage_reordering() {
                 name: format!("m{index}"),
             })
             .collect::<Vec<_>>();
-        source.set_actions(actions.clone()).unwrap();
+        // The open source's records reach its outputs until a fill closes them.
         let filled = source
             .filled_graphs()
             .unwrap()
             .into_iter()
-            .find(|graph| graph.actions().len() == actions.len())
+            .find_map(|mut graph| graph.set_actions(actions.clone()).is_ok().then_some(graph))
             .expect("a fill supports every named record");
         for reversed in [false, true] {
             let mut graph = BlockGraph::new();
@@ -265,7 +265,7 @@ fn named_hadamard_and_spatial_records_survive_storage_reordering() {
                 });
             }
             graph.set_actions(actions.clone()).unwrap();
-            let ctx = CompileContext::new(CompileConfig::new(3));
+            let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
             let module = graph.clone().with_inferred_interface().unwrap();
             for artifacts in [ctx.compile_and_validate(&graph), ctx.compile(&module)] {
                 let report = run_bloq(&artifacts.unwrap().bloq, 4, 0xA4).unwrap();
@@ -300,6 +300,65 @@ fn spatial_hadamard_h_graph_transitions_are_physical() {
     assert_eq!(graph.stabilizers().expect("H graph stabilizers").len(), 2);
     for distance in [3, 5] {
         assert_spatial_hadamard_is_physical(&graph, distance, 0x57, "H graph", Some(2));
+    }
+}
+
+#[test]
+fn spatial_hadamard_port_substitutions_preserve_the_open_temporal_face() {
+    use bloq_graph::PortRole;
+
+    for spatial_input in [false, true] {
+        let cube = if spatial_input { IVec3::ZERO } else { IVec3::Z };
+        let spatial_port = cube + IVec3::Y;
+        let temporal_port = if spatial_input { IVec3::Z } else { IVec3::ZERO };
+        let (input, output) = if spatial_input {
+            (spatial_port, temporal_port)
+        } else {
+            (temporal_port, spatial_port)
+        };
+        let mut source = BlockGraph::new();
+        source.add_block(Block::new(cube, BlockKind::Cube(CubeKind::ZXX)));
+        for (position, role) in [(input, PortRole::Input), (output, PortRole::Output)] {
+            source.add_block(
+                Block::new(position, BlockKind::Port)
+                    .with_port_role(role)
+                    .unwrap(),
+            );
+        }
+        source.add_pipe(Pipe::new(cube, Direction::YPLUS).with_hadamard());
+        source.add_pipe(Pipe::new(
+            if spatial_input { cube } else { temporal_port },
+            Direction::ZPLUS,
+        ));
+
+        for rotation in 0..4 {
+            let graph = source.rotate_about_origin(UDirection::Z, rotation).unwrap();
+            let rotate = |position| {
+                bloq_graph::ModuleRotation::new(UDirection::Z, rotation)
+                    .try_rotate_position(position)
+                    .unwrap()
+            };
+            let oracle = ExactChoi::new(&[rotate(input)], &[rotate(output)], |sim| {
+                sim.h(0);
+                Ok(())
+            });
+            let module = graph.clone().with_inferred_interface().unwrap();
+            for distance in [3, 5] {
+                let compiler = CompileContext::new(
+                    CompileConfig::new(distance).with_prepare_t_with_mpps(true),
+                );
+                for artifacts in [compiler.compile(&graph), compiler.compile(&module)] {
+                    let bloq = artifacts.unwrap().bloq;
+                    let report = oracle.run(&bloq, 8, 0x57, |_, _| Ok(()));
+                    assert_eq!(report.discarded, 0);
+                    assert!(!report.detectors.is_empty());
+                    assert!(
+                        report.all_detectors_constant(),
+                        "spatial_input={spatial_input} rotation={rotation} d={distance}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -399,7 +458,7 @@ fn cnot_aliased_measurements_resolve() {
         .expect("at least one cnot case");
     let name = test_case.id().to_string();
     let case = CompileReadyCase::from_test_case(test_case).expect("case builds");
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     let bloq = ctx.compile(&case.graph).expect("cnot compiles").bloq;
 
     let shots = 8;
@@ -430,124 +489,40 @@ fn cnot_aliased_measurements_resolve() {
     );
 }
 
-/// The T block: a `RepeatUntilSuccess` region (cultivation + escape) plus a
-/// `Branch` feedforward correction and guarded observable classical structure —
-/// the dynamic control flow a procedural engine exists for. Under noiseless
-/// execution the RUS accepts its first attempt; detectors (incl. post-selected
-/// restart parities) must be constant, and the genuine non-Clifford T must
-/// grow the stabilizer rank above 1.
+/// Ideal logical T preparation still exercises the adaptive gate's feedforward
+/// and signed terminal frame. Cultivation is verified in `verify_t_block`.
 #[test]
-fn t_block_runs_through_regions() {
-    let test_case = find_test_case("t_gate[open]").expect("native T gate case");
-    let name = test_case.id().to_string();
-    let case = CompileReadyCase::from_test_case(test_case).expect("case builds");
-    let ctx = CompileContext::new(CompileConfig::new(3));
-    let bloq = ctx.compile(&case.graph).expect("t block compiles").bloq;
+fn t_gate_feedforward_tracks_selector_and_evaluates_frames() {
+    let (_, bloq) = compiled_case("t_gate[open]", 3);
+    // Enough shots that seeing both selector values does not hinge on one RNG stream.
+    let shots = 32;
+    let report = run_bloq(&bloq, shots, 0x7).expect("ideal-source T executes");
 
-    let report = match run_bloq(&bloq, 8, 0x7) {
-        Ok(report) => report,
-        Err(err) => panic!("{name}: run_bloq failed: {err}"),
-    };
+    assert_eq!(report.discarded, 0);
+    assert!(report.all_detectors_constant());
+    assert!(report.max_rank > 1, "native T must be non-Clifford");
+    assert_eq!(report.branch_selectors.len(), shots);
+    assert!(report.branch_selectors.contains(&false));
+    assert!(report.branch_selectors.contains(&true));
 
-    assert_eq!(report.shots, 8);
-    assert!(
-        report.all_detectors_constant(),
-        "{name}: a detector varied across shots (RUS accepts first attempt noiselessly)",
-    );
-    assert!(
-        report.max_rank > 1,
-        "{name}: expected a genuine T (rank > 1), saw max_rank {}",
-        report.max_rank,
-    );
-    // Coverage guard: at least one detector was evaluated in every shot, so
-    // the constancy check above is not vacuous.
-    assert!(
-        report.detectors.iter().any(|d| d.per_shot.len() == 8),
-        "{name}: no detector evaluated across all 8 shots (vacuous constancy)",
-    );
-    // Feedforward exercised: the Branch selector took both arms across the seeds.
-    assert!(
-        report.branch_selectors.iter().any(|&b| b) && report.branch_selectors.iter().any(|&b| !b),
-        "{name}: expected both Branch arms across seeds, saw {:?}",
-        report.branch_selectors,
-    );
-
-    // The raw observable is byproduct-dependent by design; corrections live in
-    // the terminal Pauli frame. The empirical feedforward invariant we can
-    // ground is
-    // `raw_obs ⊕ branch_selector`: the Branch selector is the action bit that
-    // drives the Z-frame correction (frame.z, node 21), so the raw byproduct XOR
-    // that bit is the feedforward-consistent logical value and must be constant
-    // across seeds.
-    //
-    // The fully-grounded decomposition is `raw ⊕ frame.z`; `run_bloq` folds
-    // the frame's member `Decode`s natively. We keep the coarser
-    // `raw ⊕ branch_selector` check here (the
-    // selector is the same action bit frame.z folds) and separately assert
-    // frame.z is evaluable below.
-    //
-    // The raw fold here is record parity plus live `Output`-face boundary Paulis
-    // only: the T block's input-boundary anchor contributes nothing
-    // physically — it is the magic-state source endpoint, closed internally by the
-    // cultivation seam (its records already fold into observable recipes), so
-    // `observable_value` skips `Input` faces.
-    assert!(
-        !report.observables.is_empty(),
-        "{name}: expected a logical observable"
-    );
-    assert_eq!(
-        report.branch_selectors.len(),
-        8,
-        "{name}: expected exactly one Branch selector per shot, saw {:?}",
-        report.branch_selectors,
-    );
+    // The native fixture's raw readout carries the selective correction bit.
     let raw = &report.observables[0].per_shot;
-    assert_eq!(
-        raw.len(),
-        8,
-        "{name}: observable 0 not evaluated in every shot: {raw:?}"
-    );
-    let corrected: Vec<bool> = raw
+    assert_eq!(raw.len(), shots);
+    let corrected = raw
         .iter()
         .zip(&report.branch_selectors)
-        .map(|(&o, &b)| o ^ b)
-        .collect();
+        .map(|(raw, selector)| raw ^ selector)
+        .collect::<Vec<_>>();
     assert!(
-        corrected.windows(2).all(|w| w[0] == w[1]),
-        "{name}: raw_obs ⊕ branch_selector varied across seeds: raw={raw:?} sel={:?} corrected={corrected:?}",
-        report.branch_selectors,
+        corrected.windows(2).all(|pair| pair[0] == pair[1]),
+        "raw readout XOR selector must be constant: {corrected:?}"
     );
 
-    // Frame bits read member `Decode`s (record-backed corrected parities),
-    // so `run_bloq` folds them natively: frame.z must be `Some` every shot. It
-    // is legitimately shot-varying (it tracks the teleportation byproduct), so
-    // we assert evaluability, NOT constancy.
-    assert_eq!(
-        report.frame_pairs.len(),
-        1,
-        "{name}: expected one output frame pair"
-    );
-    assert_eq!(
-        report.frame_pairs[0].z_bits.len(),
-        8,
-        "{name}: frame z evaluated in every shot"
-    );
-    assert!(
-        report.frame_pairs[0].z_bits.iter().all(Option::is_some),
-        "{name}: frame z-bit should be Some (record-backed), saw {:?}",
-        report.frame_pairs[0].z_bits,
-    );
-
-    // The T block tracks no X byproduct, so its X-frame content is empty and
-    // folds to a constant `Some(false)` every shot (the probe-confirmed shape).
-    assert!(
-        report.frame_pairs[0]
-            .x_bits
-            .iter()
-            .all(|x| *x == Some(false)),
-        "{name}: frame x-bit expected empty (Some(false)) every shot, saw {:?}",
-        report.frame_pairs[0].x_bits,
-    );
+    assert_eq!(report.frame_pairs.len(), 1);
+    let frame = &report.frame_pairs[0];
+    assert_eq!(frame.z_bits.len(), shots);
+    assert!(frame.z_bits.iter().all(Option::is_some));
+    assert_eq!(frame.x_bits, vec![Some(false); shots]);
 }
 
 #[test]
@@ -562,9 +537,9 @@ fn thth_frame_recovers_exact_gate_sequence() {
     graph.add_block(Block::new(IVec3::NEG_Z, BlockKind::Port));
     graph.add_pipe(Pipe::new(IVec3::NEG_Z, Direction::ZPLUS).with_hadamard());
 
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     let bloq = ctx.compile(&graph).expect("THTH compiles").bloq;
-    let shots = 3;
+    let shots = 8;
     let seed = 0x11;
 
     // The added input Hadamard precedes the gallery's T;H;T;H circuit.
@@ -631,7 +606,7 @@ fn t_fed_t_gate_bloqs(cap: &str, h_pipe: bool, resolve: &str) -> [bloq_compile::
     let graph = bloq_graph::BlockGraph::from_blog_text(&source)
         .expect("t-fed t gate blog parses")
         .fix_shadowed_faces();
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     let module = graph.clone().with_inferred_interface().unwrap();
     [ctx.compile(&graph), ctx.compile(&module)]
         .map(|artifacts| artifacts.expect("t-fed t gate compiles").bloq)
@@ -760,7 +735,7 @@ fn assert_crossing_decoder_flip_changes_z_frame(bloq: &bloq_ir::Bloq) {
 fn t_block_frame_z_uses_the_crossing_rows_decoder_estimate() {
     let test_case = find_test_case("t_gate[open]").expect("native T gate case");
     let case = CompileReadyCase::from_test_case(test_case).expect("case builds");
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     let bloq = ctx.compile(&case.graph).expect("t block compiles").bloq;
     assert_crossing_decoder_flip_changes_z_frame(&bloq);
 }
@@ -798,7 +773,7 @@ fn hadamard_capped_t_bloq() -> bloq_compile::Bloq {
     let graph = bloq_graph::BlockGraph::from_blog_text(HADAMARD_CAPPED_T_BLOG)
         .expect("hadamard-capped t blog parses")
         .fix_shadowed_faces();
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     ctx.compile(&graph)
         .expect("hadamard-capped t block compiles")
         .bloq
@@ -831,7 +806,7 @@ fn hadamard_capped_t_preserves_the_source_branch_sign() {
         .unwrap()
         .fix_shadowed_faces();
     let module = graph.clone().with_inferred_interface().unwrap();
-    let compiler = CompileContext::new(CompileConfig::new(3));
+    let compiler = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     for artifacts in [compiler.compile(&graph), compiler.compile(&module)] {
         let bloq = artifacts.unwrap().bloq;
         let ideals = [false, true].map(|negative| {
@@ -1037,20 +1012,17 @@ fn feedback_multi_target_even_parity_does_not_flip_observable() {
     // targets. If derivation ever reshapes this, the test stops covering the
     // even-count fold and must be revisited.
     let stabilizers = graph.stabilizers().expect("stabilizers derive");
-    assert_eq!(stabilizers.generators.len(), 1, "one tracked generator");
-    assert!(stabilizers.generators[0].is_measurement());
+    assert_eq!(stabilizers.len(), 1, "one tracked generator");
+    assert!(stabilizers[0].is_measurement());
     for target in [IVec3::new(0, 0, 0), IVec3::new(0, 1, 0)] {
         assert_eq!(
-            stabilizers.generators[0]
-                .stabilizer
-                .interior_nodes
-                .get(&target),
+            stabilizers[0].stabilizer.interior_nodes.get(&target),
             Some(&Pauli::X),
             "the seam surface carries X at feedback target {target}",
         );
     }
 
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     let bloq = ctx.compile(&graph).expect("fixture compiles").bloq;
     let observable_count = bloq
         .top()
@@ -1173,7 +1145,7 @@ fn unconditioned_feedback_uses_its_wire_for_condition_reads(
     let source = BlockGraph::from_blog_text(source)
         .unwrap()
         .fix_shadowed_faces();
-    let compiler = CompileContext::new(CompileConfig::new(3));
+    let compiler = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     for feedback in [false, true] {
         let mut graph = source.clone();
         graph
@@ -1247,7 +1219,7 @@ fn feedback_only_frame_content_reports_the_byproduct() {
     let graph = bloq_graph::BlockGraph::from_blog_text(FEEDBACK_ONLY_FRAME_BLOG)
         .expect("feedback-only frame blog parses")
         .fix_shadowed_faces();
-    let ctx = CompileContext::new(CompileConfig::new(3));
+    let ctx = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
     let bloq = ctx.compile(&graph).expect("fixture compiles").bloq;
     let shots = 4;
     let seed = 0xF3;
@@ -1257,4 +1229,123 @@ fn feedback_only_frame_content_reports_the_byproduct() {
     });
     let report = oracle.run(&bloq, shots, seed, |_, _| Ok(()));
     assert_eq!(report.frame_pairs.len(), 1, "one output frame pair");
+}
+
+/// Values of the named readout `name` across a run from `|+>` inputs, through
+/// the observable whose provenance is its source action.
+fn named_readout_values(graph: &BlockGraph, bloq: &bloq_compile::Bloq, name: &str) -> Vec<bool> {
+    let ordinal = graph
+        .actions()
+        .iter()
+        .position(|action| matches!(action, bloq_graph::Action::Measure { name: measured, .. } if measured == name))
+        .expect("named measurement exists");
+    // Inputs start in |+>, so a merge parity of two of them is random.
+    let report = bloq_vm::run_bloq_with_io(bloq, 64, 0x5EED, |_, _| Ok(()), |_, _| Ok(()))
+        .expect("program runs");
+    let observable = bloq
+        .top()
+        .nodes()
+        .filter(|(_, node)| {
+            matches!(
+                node.try_classical(),
+                Some(ClassicalNode::Observable { index: Some(_), .. })
+            )
+        })
+        .position(|(_, node)| {
+            node.provenance
+                == NodeProvenance::Action {
+                    ordinal: ordinal as u32,
+                }
+        })
+        .expect("named readout has an observable");
+    report.observables[observable].per_shot.clone()
+}
+
+/// A later unnamed merge between the same patches must not join a named
+/// merge's readout: their records agree, so the joint parity is constant.
+#[rstest::rstest]
+fn named_merge_is_not_read_through_a_later_unnamed_merge(#[values(false, true)] feedback: bool) {
+    let mut source = String::from("BLOG 1.0\n");
+    for (wire, (x, top)) in [(0, "X"), (1, "X"), (3, "Port")].into_iter().enumerate() {
+        let id = 4 * wire;
+        source += &format!(
+            "{id}: Port [{x},0,0]\n{}: XZX [{x},0,1]\n{}: XZX [{x},0,2]\n{}: {top} [{x},0,3]\n\
+             [{x},0,0] -> +Z\n[{x},0,1] -> +Z\n[{x},0,2] -> +Z\n",
+            id + 1,
+            id + 2,
+            id + 3,
+        );
+    }
+    source += "[0,0,1] -> +X\n[0,0,2] -> +X\nm = measure [0,0,1] -> +X\n";
+    if feedback {
+        source += "feedback X [0,0,1]\n";
+    }
+    let graph = BlockGraph::from_blog_text(&source).expect("repeated merge parses");
+    let bloq = CompileContext::new(CompileConfig::new(3))
+        .compile(&graph)
+        .expect("repeated merge compiles")
+        .bloq;
+    let values = named_readout_values(&graph, &bloq, "m");
+    assert!(
+        values.contains(&false) && values.contains(&true),
+        "{values:?}"
+    );
+}
+
+/// Repeated T merges read the named merge record, not a constant parity.
+#[test]
+fn named_t_merge_is_not_read_through_repeated_merges() {
+    let layers = 2;
+    let position = |x, z| IVec3::new(x, 0, z);
+    let mut graph = BlockGraph::new();
+    graph.add_block(Block::new(position(0, -1), BlockKind::T));
+    graph.add_block(Block::new(position(1, -1), BlockKind::Port));
+    graph.add_block(Block::new(
+        position(0, layers),
+        BlockKind::Selective(bloq_graph::SelectiveKind::XY),
+    ));
+    graph.add_block(Block::new(position(1, layers), BlockKind::Port));
+    for layer in 0..layers {
+        for x in 0..=1 {
+            graph.add_block(Block::new(
+                position(x, layer),
+                BlockKind::Cube(CubeKind::ZXZ),
+            ));
+        }
+        graph.add_pipe(Pipe::new(position(0, layer), Direction::XPLUS));
+    }
+    for x in 0..=1 {
+        for layer in -1..layers {
+            let pipe = Pipe::new(position(x, layer), Direction::ZPLUS);
+            graph.add_pipe(if layer == -1 || layer == layers - 1 {
+                pipe.with_hadamard()
+            } else {
+                pipe
+            });
+        }
+    }
+    graph
+        .set_actions(vec![
+            bloq_graph::Action::Measure {
+                target: bloq_graph::MeasureTarget::Edge {
+                    src: IVec3::ZERO,
+                    dir: Direction::XPLUS,
+                },
+                name: "m".into(),
+            },
+            bloq_graph::Action::Resolve {
+                target: position(0, layers),
+                condition: bloq_graph::Expr::Not(Box::new(bloq_graph::Expr::Var("m".into()))),
+            },
+        ])
+        .expect("repeated T merges are valid");
+    let bloq = CompileContext::new(CompileConfig::new(3))
+        .compile(&graph)
+        .expect("repeated T merges compile")
+        .bloq;
+    let values = named_readout_values(&graph, &bloq, "m");
+    assert!(
+        values.contains(&false) && values.contains(&true),
+        "{values:?}"
+    );
 }

@@ -7,6 +7,38 @@ execution. Compile and lower once, then reuse the simulation across shots.
 
 The [T–H–T–H example](thth.md) combines these features in one small computation.
 
+## Check a physical output state without timing
+
+`bloq.run_noiseless` executes compiled physical circuits, adaptive controls, and
+native resource retries with ideal decoding. It accepts uniform logical
+`"zero"` or `"plus"` inputs and returns corrected X/Y/Z expectations per output.
+For up to six outputs, `include_signature=True` also returns all joint Pauli
+expectations, preserving correlations that single-qubit marginals cannot show.
+
+```python
+report = bloq.run_noiseless(
+    program, shots=3, seed=17, input_state="zero", include_signature=True,
+)
+assert report["discarded"] == 0
+assert report["all_detectors_constant"]
+```
+
+This mode captures an output on a private simulator qubit before its physical
+patch is reused. Input injection and output capture are ideal boundaries;
+the supplied physical circuits execute as compiled. For ordinary gate and
+algorithm checks, compile with `prepare_t_with_mpps=True` to prepare ideal
+logical T sources without cultivation. Output order matches
+`program.logical_outputs()`. A discarded shot has no sample.
+
+Detector reports cover applicable physical checks. Checks spanning an ideal
+input replacement are omitted: their earlier syndrome records describe the
+replaced state. Checks within the physical segments remain active.
+
+This executor adds no noise and has no hardware clock or decoder-latency model.
+Any explicit noise already present in the supplied IR still executes. Use the
+dynamic API below to study simulated timing and waits. Dynamic lowering does
+not yet support reused output cuts.
+
 ## Lower once, run many shots
 
 Python's `bloq` package includes the VM. Rust applications enable it with
@@ -36,6 +68,13 @@ to `cnot.instructions.json` and the last shot's trace to `cnot.trace.json`.
 
 Each run starts a new shot. A discarded shot has no logical output. For an
 accepted shot, the X/Y/Z expectations include the output's Pauli frame correction.
+
+Reversed temporal Ports use [ideal Bell adapters](../circuit-constructions.md#temporal-port).
+A future-connected output retains a private qubit; a past-connected input
+arrives on a private qubit before its Bell measurement. Bell outcomes enter
+corrected readouts and output frames without discarding shots. Intentional
+postselection requires an explicit discard. These boundary operations remain
+ideal when circuit noise is enabled.
 
 :::{important}
 The default decoder is a stochastic policy model, not a syndrome decoder.

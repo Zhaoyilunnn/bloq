@@ -24,16 +24,6 @@ use bloq_ir::{
 use bloq_stim::emit_bloq_stim;
 use color_eyre::eyre::{self, ContextCompat, WrapErr};
 use glam::{IVec2, IVec3};
-#[cfg(not(target_arch = "wasm32"))]
-use hotpath::measure_block;
-
-// Profiling uses native thread metrics; web builds execute the same blocks.
-#[cfg(target_arch = "wasm32")]
-macro_rules! measure_block {
-    ($label:literal, $body:block) => {
-        $body
-    };
-}
 
 #[derive(Debug)]
 pub(super) struct CompiledDownload {
@@ -52,19 +42,15 @@ impl CompiledDownload {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[hotpath::measure]
 fn compile_artifacts(
     source: &BlockGraph,
     request: &CompileRequest,
-    progress: Option<&CompileProgress>,
+    progress: &CompileProgress,
 ) -> eyre::Result<(CompileArtifacts, CompileConfig)> {
     let config = config_from_request(request)?;
-    let ctx = match progress {
-        Some(progress) => CompileContext::new(config)
-            .with_progress_observer(progress.observer())
-            .with_cancellation(progress.cancellation.clone()),
-        None => CompileContext::new(config),
-    };
+    let ctx = CompileContext::new(config)
+        .with_progress_observer(progress.observer())
+        .with_cancellation(progress.cancellation.clone());
 
     // The compiler is the single authority on what it can lower, and `compile`
     // runs the same validation `verify` would, so we compile directly instead
@@ -84,30 +70,17 @@ fn viewer_graph(graph: &BlockGraph) -> eyre::Result<BlockGraph> {
     Ok(graph.with_zero_min_z()?.fix_shadowed_faces())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(super) fn compile_graph_downloads(
-    graph: &BlockGraph,
-    request: &CompileRequest,
-) -> eyre::Result<CompiledDownload> {
-    compile_downloads(graph, request, None)
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn compile_downloads(
     source: &BlockGraph,
     request: &CompileRequest,
-    progress: Option<&CompileProgress>,
+    progress: &CompileProgress,
 ) -> eyre::Result<CompiledDownload> {
     let (artifacts, _) = compile_artifacts(source, request, progress)?;
-    if let Some(progress) = progress {
-        progress.set_phase(CompileProgressPhase::Exporting);
-    }
-    match progress {
-        Some(progress) => progress
-            .cancellation
-            .run(|| export_download(artifacts.bloq, request)),
-        None => export_download(artifacts.bloq, request),
-    }
+    progress.set_phase(CompileProgressPhase::Exporting);
+    progress
+        .cancellation
+        .run(|| export_download(artifacts.bloq, request))
 }
 
 pub(super) fn export_download(
@@ -130,25 +103,26 @@ pub(super) fn export_download(
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-#[hotpath::measure]
 pub(crate) fn compile_graph_for_viewer(
     graph: &BlockGraph,
     request: &CompileRequest,
 ) -> eyre::Result<CompiledBloqView> {
-    compile_for_viewer(graph, request, None)
+    compile_for_viewer(
+        graph,
+        request,
+        &CompileProgress::new(super::EditorTabId::new(0), 0),
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn compile_for_viewer(
     source: &BlockGraph,
     request: &CompileRequest,
-    progress: Option<&CompileProgress>,
+    progress: &CompileProgress,
 ) -> eyre::Result<CompiledBloqView> {
     let (artifacts, compile_config) = compile_artifacts(source, request, progress)?;
-    if let Some(progress) = progress {
-        progress.set_phase(CompileProgressPhase::BuildingView);
-    }
-    let build = || {
+    progress.set_phase(CompileProgressPhase::BuildingView);
+    progress.cancellation.run(|| {
         build_view_from_artifacts(
             source,
             request,
@@ -156,11 +130,7 @@ pub(super) fn compile_for_viewer(
             compile_config,
             artifacts.compile_duration,
         )
-    };
-    match progress {
-        Some(progress) => progress.cancellation.run(build),
-        None => build(),
-    }
+    })
 }
 
 pub(super) fn build_view_from_artifacts(
@@ -376,7 +346,6 @@ fn collect_selected_quantum_node_keys(
 /// A flatten or view failure disables the overlay (reason stored) while leaving
 /// the default view intact; a Layer-2 failure keeps the flattened timelines but
 /// disables the region overlay.
-#[cfg_attr(not(target_arch = "wasm32"), hotpath::measure)]
 pub(crate) fn build_detslice(
     program: &Bloq,
     source_viewer_graph: &BlockGraph,
@@ -390,17 +359,15 @@ pub(crate) fn build_detslice(
             ..Default::default()
         };
     }
-    let flat_view = measure_block!("detslice.flat_view", {
-        match build_detslice_circuit_view(&flat, source_viewer_graph, source_offset) {
-            Ok(view) => view,
-            Err(err) => {
-                return DetsliceData {
-                    unavailable_reason: Some(format!("{err:#}")),
-                    ..Default::default()
-                };
-            }
+    let flat_view = match build_detslice_circuit_view(&flat, source_viewer_graph, source_offset) {
+        Ok(view) => view,
+        Err(err) => {
+            return DetsliceData {
+                unavailable_reason: Some(format!("{err:#}")),
+                ..Default::default()
+            };
         }
-    });
+    };
 
     // Every node's flat moment count (for the alignment check) before filtering
     // out the moment-less nodes the overlay never steps through.
@@ -428,49 +395,45 @@ pub(crate) fn build_detslice(
     let has_dynamic_blocks = source_viewer_graph
         .blocks()
         .any(|block| block.kind().is_dynamic());
-    let slice_program = measure_block!("detslice.slice_program", {
-        if has_dynamic_blocks {
-            match build_proxy_slice_program(
-                program,
-                &flat,
-                source_viewer_graph,
-                compile_config,
-                &viewer_node_refs,
-            ) {
-                Ok(input) => input,
-                Err(err) => {
-                    return DetsliceData {
-                        flat_moments,
-                        unavailable_reason: Some(format!("selected Clifford proxy: {err:#}")),
-                        ..Default::default()
-                    };
-                }
-            }
-        } else {
-            SliceProgram {
-                program: program.clone(),
-                node_refs: viewer_node_refs,
+    let slice_program = if has_dynamic_blocks {
+        match build_proxy_slice_program(
+            program,
+            &flat,
+            source_viewer_graph,
+            compile_config,
+            &viewer_node_refs,
+        ) {
+            Ok(input) => input,
+            Err(err) => {
+                return DetsliceData {
+                    flat_moments,
+                    unavailable_reason: Some(format!("selected Clifford proxy: {err:#}")),
+                    ..Default::default()
+                };
             }
         }
-    });
+    } else {
+        SliceProgram {
+            program: program.clone(),
+            node_refs: viewer_node_refs,
+        }
+    };
 
     // The tape flattens internally. Fixed programs share the real view's
     // `NodeRef` space; a dynamic program uses the provenance map built above to
     // translate its pinned proxy nodes back onto that real view.
     let mut options = ProgramSliceOptions::default();
     options.set_physical_observables(true);
-    let slices = measure_block!("detslice.tape", {
-        match program_detector_slices_with_options(&slice_program.program, &options) {
-            Ok(slices) => slices,
-            Err(err) => {
-                return DetsliceData {
-                    flat_moments,
-                    unavailable_reason: Some(err.to_string()),
-                    ..Default::default()
-                };
-            }
+    let slices = match program_detector_slices_with_options(&slice_program.program, &options) {
+        Ok(slices) => slices,
+        Err(err) => {
+            return DetsliceData {
+                flat_moments,
+                unavailable_reason: Some(err.to_string()),
+                ..Default::default()
+            };
         }
-    });
+    };
 
     let mut detector_slices = HashMap::new();
     let skipped_cross_tape = slices.skipped_cross_tape;
@@ -622,11 +585,12 @@ pub(super) fn save_compiled_downloads(output: &CompiledDownload) -> eyre::Result
 #[cfg(test)]
 mod tests {
     use super::{
-        build_detslice, compile_graph_downloads, compile_graph_for_viewer, selected_selective_pins,
+        CompileProgress, build_detslice, compile_downloads, compile_graph_for_viewer,
+        selected_selective_pins,
     };
     use crate::resources::{
         BloqNodeCategory, CompileOutputFormat, CompileRequest, CompiledBloqView, DetsliceData,
-        FlatMoment, FlatMomentOp, SliceRegionId,
+        EditorTabId, FlatMoment, FlatMomentOp, SliceRegionId,
     };
     use bloq_graph::{Action, Block, BlockGraph, BlockKind, CubeKind, GalleryItem, MeasureTarget};
     use bloq_ir::MomentKind;
@@ -679,13 +643,14 @@ mod tests {
 
     #[test]
     fn compile_graph_download_emits_stim_output() {
-        let output = compile_graph_downloads(
+        let output = compile_downloads(
             &single_cube_graph(),
             &CompileRequest {
                 code_distance: 3,
                 format: CompileOutputFormat::Stim,
                 prepare_t_with_mpps: false,
             },
+            &CompileProgress::new(EditorTabId::new(0), 0),
         )
         .expect("compile stim output");
 
@@ -697,13 +662,14 @@ mod tests {
     #[test]
     fn compile_graph_download_emits_parseable_ir_exchange_formats() {
         for format in [CompileOutputFormat::IrText, CompileOutputFormat::IrBinary] {
-            let output = compile_graph_downloads(
+            let output = compile_downloads(
                 &single_cube_graph(),
                 &CompileRequest {
                     code_distance: 3,
                     format,
                     prepare_t_with_mpps: false,
                 },
+                &CompileProgress::new(EditorTabId::new(0), 0),
             )
             .expect("compile IR output");
 
@@ -732,13 +698,14 @@ mod tests {
         // straight through as ideal noiseless boundaries — no fill required.
         let graph = GalleryItem::CNOT.build();
 
-        let output = compile_graph_downloads(
+        let output = compile_downloads(
             &graph,
             &CompileRequest {
                 code_distance: 3,
                 format: CompileOutputFormat::Stim,
                 prepare_t_with_mpps: false,
             },
+            &CompileProgress::new(EditorTabId::new(0), 0),
         )
         .expect("temporal open graph should compile");
 

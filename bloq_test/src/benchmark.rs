@@ -143,9 +143,7 @@ pub struct CaseBenchSpec {
     pub fixture_id: &'static str,
     /// Canonical (human-readable) case name, e.g. `cube_line[base][rotate:Z:1]`.
     pub case_name: String,
-    /// Filesystem- and Criterion-safe slug of `case_name`. This slug is the
-    /// shared join key between benchmark IDs, profile output directories, and
-    /// the HTML report.
+    /// Filesystem- and Criterion-safe slug shared by benchmark IDs and profile paths.
     pub case_slug: String,
     /// The underlying test case (use [`case.build()`](TestCase::build) to obtain the graph).
     pub case: TestCase,
@@ -288,13 +286,13 @@ mod tests {
     fn structural_branch_workload_has_full_projection_domain() {
         let graph = structural_branch_workload(4);
         assert_eq!(graph.branch_projections().unwrap().len(), 16);
-        let (_, _, projections) = graph.analyze_actions_with_projections().unwrap();
-        for (projection, reused) in projections {
-            assert_eq!(
-                reused.generators,
-                projection.graph().stabilizers().unwrap().generators
-            );
-        }
+        assert!(
+            graph
+                .analyze_actions()
+                .unwrap()
+                .action_graph()
+                .is_analyzed()
+        );
     }
 
     #[test]

@@ -1,20 +1,13 @@
-//! ZX graph storage, validation, and stabilizer entry points.
+//! ZX graph storage, validation, and stabilizer materialization.
 
 use super::ZXLayerView;
-use super::modular::{StabilizerPhaseBasis, canonical_external_basis};
-use super::stabilizer::{
-    CanonicalStabilizerTable, SearchBudget, Stabilizer, StabilizerError, StabilizerGenerator,
-    StabilizerGenerators, StabilizerRowKind, canonicalize_stabilizer_table,
-    canonicalize_stabilizer_table_legacy, canonicalize_stabilizer_table_with_external_basis,
-    canonicalize_stabilizer_table_with_measurement_prefix,
-    canonicalize_stabilizer_table_with_tagged_prefix, complete_stabilizer_search, contracted_sign,
-    has_forced_direct_action_cycle, stabilizers_satisfy_global_constraints,
-};
+use super::modular::StabilizerPhaseBasis;
+use super::stabilizer::{SearchBudget, Stabilizer, StabilizerError, contracted_sign};
 use crate::{
     Action, ActionDag, BlockGraphError, CubeKind, FeedbackTarget, MeasureTarget,
     MeasurementObservable, ModuleCertificationLimits, SelectiveKind,
 };
-use bloq_utils::{Pauli, PauliBasis, PauliString, PhasedPauliString};
+use bloq_utils::{Pauli, PauliBasis, PauliString};
 use glam::IVec3;
 #[cfg(feature = "gltf")]
 use glam::Vec3;
@@ -370,58 +363,6 @@ pub struct ZXGraph {
 pub(crate) type CrossIncident = SmallVec<[(usize, bool); 6]>;
 
 impl ZXGraph {
-    /// Present a stabilizer basis supplied by module composition. This never
-    /// regenerates the external row space from the linked graph.
-    pub(crate) fn stabilizers_from_composed_basis(
-        &self,
-        external_basis: &[PhasedPauliString],
-        adjustment_basis: &[PauliString],
-        cached_prefix: &[(StabilizerRowKind, PauliString)],
-        limits: ModuleCertificationLimits,
-    ) -> Result<StabilizerGenerators, StabilizerError> {
-        self.validate_feedback_targets()?;
-        let mut budget = SearchBudget::with_limits(limits);
-        budget.check_matrix(external_basis.len().saturating_mul(3), self.total_ids, 0, 0)?;
-        let external_basis = canonical_external_basis(external_basis.to_vec(), self.total_ids);
-        let raw_external = external_basis
-            .iter()
-            .map(|row| row.paulis.clone())
-            .collect::<Vec<_>>();
-        let mut rows = canonicalize_stabilizer_table_with_tagged_prefix(
-            self,
-            &raw_external,
-            &external_basis,
-            adjustment_basis,
-            cached_prefix,
-            &mut budget,
-        )
-        .and_then(|table| table.into_stabilizers(self))?;
-        // Runtime recipes use the same composed signed certificate.
-        rows.zx_graph
-            .stabilizer_phase_basis
-            .get_or_init(|| Arc::new(StabilizerPhaseBasis::new(external_basis)));
-        if stabilizers_satisfy_global_constraints(self, &rows)? {
-            match rows.validate_measurements_close_before_outputs_with_limits(limits) {
-                Ok(()) => return Ok(rows),
-                Err(super::RuntimeBasisError::Stabilizer(error)) if error.is_interrupted() => {
-                    return Err(error);
-                }
-                Err(_) => {}
-            }
-        }
-        rows.plan_readouts(limits).map_err(|error| match error {
-            super::RuntimeBasisError::Stabilizer(error) => error,
-            _ => StabilizerError::ComposedPresentationUnsatisfied,
-        })?;
-        let mut dag = self.action_graph().clone();
-        dag.attach_readout_dependencies(&rows.generators, Some(self))
-            .map_err(|error| match error {
-                BlockGraphError::Stabilizer(error) if error.is_interrupted() => error,
-                _ => StabilizerError::ComposedPresentationUnsatisfied,
-            })?;
-        Ok(rows)
-    }
-
     /// Returns all nodes.
     pub fn nodes(&self) -> &[ZXNode] {
         &self.nodes
@@ -544,23 +485,6 @@ impl ZXGraph {
             edge.id,
             pauli_at_small_node(edge, edge.n1, Pauli::from(target.pauli)),
         ))
-    }
-
-    fn validate_feedback_targets(&self) -> Result<(), StabilizerError> {
-        for action in self.action_graph.ordered_nodes() {
-            let Action::Feedback { targets, .. } = &action.action else {
-                continue;
-            };
-            for target in targets {
-                if self.feedback_edge(target).is_none() {
-                    return Err(StabilizerError::FeedbackTargetWithoutWire {
-                        target: target.target,
-                        pauli: target.pauli,
-                    });
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Returns a map from each measurement variable name to its column id.
@@ -751,20 +675,6 @@ impl ZXGraph {
         Ok(new_zx)
     }
 
-    /// Clone a selected analysis graph and resolve its selective boundaries.
-    /// This diagnostic helper keeps the exact graph available for feedback
-    /// checks after [`GuardedReadoutPlan`](super::GuardedReadoutPlan) unit audit.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown or non-fillable position or invalid fill.
-    #[doc(hidden)]
-    pub fn fill_ports_for_diagnostics(
-        &self,
-        port_map: &HashMap<IVec3, NodeKind>,
-    ) -> Result<ZXGraph, ZXError> {
-        self.fill_ports(port_map)
-    }
-
     pub(crate) fn local_stabilizer_flow_supports_for_node_kind(
         &self,
         node_id: usize,
@@ -921,6 +831,24 @@ impl ZXGraph {
         }
     }
 
+    /// Linear components whose OR is a row's support at `column` on `axis`:
+    /// the arms of a crossing centre, otherwise the column itself.
+    pub(crate) fn readout_components(&self, column: usize, axis: Pauli) -> Vec<(usize, Pauli)> {
+        let Some(node) = self.nodes.get(column) else {
+            return vec![(column, axis)];
+        };
+        if !matches!(node.kind, NodeKind::X | NodeKind::Z) || node.kind.cross_pauli() != axis {
+            return vec![(column, axis)];
+        }
+        self.neighbor_edges(node.id)
+            .map(|(_, edge)| {
+                let edge = self.edge_by_id(edge);
+                let flip = edge.hadamard && node.id == edge.sorted_nodes().1;
+                (edge.id, if flip { axis.flip() } else { axis })
+            })
+            .collect()
+    }
+
     pub(crate) fn reconstruct_cross_center(&self, table: &mut [PauliString]) {
         let incident = self.cross_incident.get_or_init(|| {
             self.nodes
@@ -990,17 +918,6 @@ impl ZXGraph {
             };
             row.set(node.id, if crosses { arm | cross_pauli } else { arm });
         }
-    }
-    #[cfg(test)]
-    pub(crate) fn to_stabilizer_table(&self) -> Result<CanonicalStabilizerTable, StabilizerError> {
-        self.to_stabilizer_table_with_budget(&mut SearchBudget::new(usize::MAX))
-    }
-
-    fn to_stabilizer_table_with_budget(
-        &self,
-        budget: &mut SearchBudget,
-    ) -> Result<CanonicalStabilizerTable, StabilizerError> {
-        canonicalize_stabilizer_table(self, budget)
     }
 
     /// Materializes a Pauli row into graph-position support for rendering and
@@ -1124,100 +1041,6 @@ impl ZXGraph {
         self.nodes.iter().any(|node| node.kind.is_port())
     }
 
-    /// Computes generators from the external table for both open and closed
-    /// graphs under [`ModuleCertificationLimits::DEFAULT`]. An affine fallback
-    /// follows the deterministic path within the same search budget.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StabilizerError`] if the stabilizer table cannot be derived,
-    /// or cancellation when run inside [`crate::CancellationToken::run`].
-    pub fn stabilizers(&self) -> Result<StabilizerGenerators, StabilizerError> {
-        self.stabilizers_with_limits(ModuleCertificationLimits::DEFAULT)
-    }
-
-    pub(crate) fn stabilizers_reusing_measurements(
-        &self,
-        measurements: &[&StabilizerGenerator],
-        limits: ModuleCertificationLimits,
-    ) -> Result<Option<StabilizerGenerators>, StabilizerError> {
-        self.validate_feedback_targets()?;
-        let mut budget = SearchBudget::with_limits(limits);
-        budget.check_matrix(measurements.len(), self.total_ids(), 0, 0)?;
-        let cached = measurements
-            .iter()
-            .map(|generator| {
-                Some((
-                    generator.measurement_name()?,
-                    self.remap_stabilizer_row(&generator.stabilizer)?,
-                ))
-            })
-            .collect::<Option<Vec<_>>>();
-        let Some(cached) = cached.filter(|cached| !cached.is_empty()) else {
-            return Ok(None);
-        };
-        self.check_external_table_limits(limits)?;
-        let (raw_external, signed_external) = self.to_external_generator_table_with_signed();
-        let Some(table) = canonicalize_stabilizer_table_with_measurement_prefix(
-            self,
-            &raw_external,
-            &signed_external,
-            &cached,
-            &mut budget,
-        )?
-        else {
-            return Ok(None);
-        };
-        let candidate = match table.into_stabilizers(self) {
-            Ok(candidate) => candidate,
-            Err(error) if error.is_interrupted() => return Err(error),
-            Err(_) => return Ok(None),
-        };
-        Ok(stabilizers_satisfy_global_constraints(self, &candidate)?.then_some(candidate))
-    }
-
-    fn remap_stabilizer_row(&self, stabilizer: &Stabilizer) -> Option<PauliString> {
-        let mut row = PauliString::new(self.total_ids);
-        for (&pos, &pauli) in &stabilizer.interior_nodes {
-            row.set(self.node_at(pos)?.id, pauli);
-        }
-        for (&(src, dst), &pauli) in &stabilizer.interior_edges {
-            let src = self.node_at(src)?.id;
-            let dst = self.node_at(dst)?.id;
-            row.set(self.edge_id(src, dst)?, pauli);
-            row.set(self.edge_id(dst, src)?, pauli);
-        }
-        Some(row)
-    }
-
-    /// Computes generators under explicit certification limits.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StabilizerError`] for unavailable surfaces or exhausted
-    /// search, matrix, or selective-domain resources, or request cancellation.
-    pub fn stabilizers_with_limits(
-        &self,
-        limits: ModuleCertificationLimits,
-    ) -> Result<StabilizerGenerators, StabilizerError> {
-        if self.total_ids > limits.max_local_columns {
-            return Err(StabilizerError::ResourceLimited {
-                phase: "local ZX columns",
-                observed: self.total_ids,
-                limit: limits.max_local_columns,
-            });
-        }
-        self.stabilizers_with_external_basis(None, limits)
-    }
-
-    pub(crate) fn stabilizers_from_external_basis_with_limits(
-        &self,
-        external_basis: &[PhasedPauliString],
-        limits: ModuleCertificationLimits,
-    ) -> Result<StabilizerGenerators, StabilizerError> {
-        self.stabilizers_with_external_basis(Some(external_basis), limits)
-    }
-
     pub(crate) fn check_external_table_limits(
         &self,
         limits: ModuleCertificationLimits,
@@ -1247,76 +1070,6 @@ impl ZXGraph {
             })
             .fold(0, usize::saturating_add)
     }
-
-    fn stabilizers_with_external_basis(
-        &self,
-        external_basis: Option<&[PhasedPauliString]>,
-        limits: ModuleCertificationLimits,
-    ) -> Result<StabilizerGenerators, StabilizerError> {
-        self.validate_feedback_targets()?;
-        let mut budget = SearchBudget::with_limits(limits);
-        let source_rows = external_basis.map_or_else(
-            || self.external_source_row_count(),
-            <[PhasedPauliString]>::len,
-        );
-        // Signed and raw external tables coexist during canonicalization.
-        budget.check_matrix(source_rows.saturating_mul(2), self.total_ids, 0, 0)?;
-        let supplied_raw = external_basis.map(|basis| {
-            basis
-                .iter()
-                .map(|row| row.paulis.clone())
-                .collect::<Vec<_>>()
-        });
-        let table = match (supplied_raw.as_deref(), external_basis) {
-            (Some(raw), Some(signed)) => {
-                canonicalize_stabilizer_table_with_external_basis(self, raw, signed, &mut budget)
-            }
-            _ => self.to_stabilizer_table_with_budget(&mut budget),
-        };
-        let used_temporal = table
-            .as_ref()
-            .is_ok_and(CanonicalStabilizerTable::used_temporal_measurements);
-        let mut greedy = table.and_then(|table| table.into_stabilizers(self));
-        if greedy.as_ref().is_err_and(StabilizerError::is_interrupted) {
-            return greedy;
-        }
-        if let Ok(rows) = &greedy
-            && stabilizers_satisfy_global_constraints(self, rows)?
-        {
-            return greedy;
-        }
-        let raw_external = supplied_raw.unwrap_or_else(|| self.to_external_generator_table());
-        if used_temporal {
-            greedy = canonicalize_stabilizer_table_legacy(self, &raw_external, &mut budget)
-                .and_then(|table| table.into_stabilizers(self));
-            if greedy.as_ref().is_err_and(StabilizerError::is_interrupted) {
-                return greedy;
-            }
-            if let Ok(rows) = &greedy
-                && stabilizers_satisfy_global_constraints(self, rows)?
-            {
-                return greedy;
-            }
-        }
-        if greedy.is_ok() && has_forced_direct_action_cycle(self, &raw_external, &mut budget)? {
-            return greedy;
-        }
-
-        let complete =
-            complete_stabilizer_search(self, &raw_external, external_basis, &mut budget)?;
-        if let Some(error) = &complete.failure
-            && error.is_interrupted()
-        {
-            return Err(error.clone());
-        }
-        if let Some(rows) = complete.representable {
-            return Ok(rows);
-        }
-        match complete.witness {
-            Some(rows) => Ok(rows),
-            None => greedy.map_err(|error| complete.failure.unwrap_or(error)),
-        }
-    }
 }
 
 pub(super) fn pauli_at_small_node(edge: &ZXEdge, current_id: usize, current_pauli: Pauli) -> Pauli {
@@ -1337,6 +1090,22 @@ fn measurement_observable_for_node_kind(kind: NodeKind) -> Option<MeasurementObs
     }
 }
 
+/// Validates one selective fill and records the boundary spider it fills with.
+pub(super) fn insert_selective_fill(
+    port_map: &mut HashMap<IVec3, NodeKind>,
+    pos: IVec3,
+    kind: crate::SelectiveKind,
+    chosen: PauliBasis,
+) -> Result<(), super::RuntimeBasisError> {
+    if ![kind.pauli_if_true(), kind.pauli_if_false()].contains(&chosen) {
+        return Err(super::RuntimeBasisError::InvalidSelectiveBasis { pos, kind, chosen });
+    }
+    if port_map.insert(pos, filled_node_kind(chosen)).is_some() {
+        return Err(super::RuntimeBasisError::DuplicateSelective(pos));
+    }
+    Ok(())
+}
+
 /// The boundary spider a chosen measurement basis fills a selective node with.
 pub(super) fn filled_node_kind(chosen: PauliBasis) -> NodeKind {
     match chosen {
@@ -1346,43 +1115,29 @@ pub(super) fn filled_node_kind(chosen: PauliBasis) -> NodeKind {
     }
 }
 
+impl ZXGraph {
+    /// Demotes prepared T resources to ports. Both have the same local flow
+    /// rows and cross-center behavior, so a signed phase basis survives.
+    pub(super) fn demote_t_nodes_to_ports(&mut self) {
+        for node in &mut self.nodes {
+            if node.kind == NodeKind::T {
+                node.kind = NodeKind::Port;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use bloq_utils::{Pauli, PauliString, PhasedPauliString};
+    use bloq_utils::{Pauli, PauliString};
     use glam::ivec3;
     use rustc_hash::FxHashMap;
 
-    use crate::{
-        Action, ActionDag, Direction, GalleryItem, MeasureTarget, MeasurementObservable,
-        ModuleCertificationLimits,
-    };
+    use crate::{Action, ActionDag, Direction, GalleryItem, MeasureTarget, MeasurementObservable};
 
     use super::{CsrAdjacency, NodeKind, ZXEdge, ZXError, ZXGraph, ZXNode};
-    use crate::zx::StabilizerError;
-
-    #[test]
-    fn scalar_matrix_limit_precedes_dense_table_allocation() {
-        let graph = GalleryItem::CNOT
-            .build()
-            .materialize_root_graph()
-            .expect("gallery flat projection");
-        let zx = ZXGraph::from_block_graph_for_analysis(&graph).unwrap();
-        assert!(matches!(
-            zx.stabilizers_with_limits(ModuleCertificationLimits {
-                max_matrix_words: 0,
-                ..ModuleCertificationLimits::UNLIMITED
-            }),
-            Err(StabilizerError::ResourceLimited {
-                phase: "dense matrix words",
-                limit: 0,
-                ..
-            })
-        ));
-        zx.stabilizers_with_limits(ModuleCertificationLimits::UNLIMITED)
-            .unwrap();
-    }
 
     #[test]
     fn csr_preserves_last_edge_lookup_for_parallel_neighbors() {
@@ -1422,7 +1177,7 @@ mod tests {
                     .map(|edge| (edge.n1, edge.n2, edge.id))
                     .collect::<Vec<_>>(),
             );
-            let signed = zx.to_external_generator_table_with_signed().1;
+            let signed = zx.to_signed_external_generator_table();
             let reference = zx.clone();
             reference
                 .stabilizer_phase_basis
@@ -1460,29 +1215,6 @@ mod tests {
         row.set(zx.total_ids, Pauli::X);
         assert!(!zx.contains_stabilizer_support(&row));
         assert_eq!(zx.stabilizer_row_phases(&[row]), [0]);
-    }
-
-    #[test]
-    fn composed_basis_does_not_fall_back_when_measurement_rows_are_missing() {
-        let zx = manual_single_node_graph(
-            NodeKind::Z,
-            MeasurementObservable::Concrete(crate::PauliBasis::X),
-        );
-        let external = zx
-            .to_external_generator_table()
-            .into_iter()
-            .map(PhasedPauliString::positive)
-            .collect::<Vec<_>>();
-
-        assert!(matches!(
-            zx.stabilizers_from_composed_basis(
-                &external,
-                &[],
-                &[],
-                ModuleCertificationLimits::UNLIMITED
-            ),
-            Err(StabilizerError::ComposedPresentationUnsatisfied)
-        ));
     }
 
     #[test]
@@ -1546,7 +1278,7 @@ mod tests {
         zx.reconstruct_cross_center(&mut [PauliString::new(zx.total_ids)]);
         zx.stabilizer_phase_basis
             .set(std::sync::Arc::new(super::StabilizerPhaseBasis::new(
-                zx.to_external_generator_table_with_signed().1,
+                zx.to_signed_external_generator_table(),
             )))
             .unwrap();
         assert!(zx.stabilizer_phase_basis.get().is_some());
@@ -1718,36 +1450,6 @@ mod tests {
                 assert_eq!(rows, expected);
             }
         }
-    }
-
-    #[test]
-    fn stale_measurement_prefix_is_rejected() {
-        let graph = GalleryItem::CCZGateTeleport
-            .build()
-            .materialize_root_graph()
-            .expect("gallery flat projection");
-        let baseline = ZXGraph::from_block_graph_for_analysis(&graph)
-            .unwrap()
-            .stabilizers()
-            .unwrap();
-        let projection = graph.branch_projections().unwrap().pop().unwrap();
-        let zx = ZXGraph::from_block_graph_for_analysis(projection.graph()).unwrap();
-        let mut measurements = baseline
-            .generators
-            .into_iter()
-            .filter(crate::StabilizerGenerator::is_measurement)
-            .collect::<Vec<_>>();
-        measurements[0]
-            .stabilizer
-            .interior_nodes
-            .insert(ivec3(i32::MAX, 0, 0), Pauli::X);
-        let measurements = measurements.iter().collect::<Vec<_>>();
-
-        assert!(
-            zx.stabilizers_reusing_measurements(&measurements, ModuleCertificationLimits::DEFAULT)
-                .unwrap()
-                .is_none()
-        );
     }
 
     #[test]

@@ -14,13 +14,13 @@ use crate::systems::camera::{CAMERA_DEFAULT_FOV_Y, apply_camera_setting};
 use crate::systems::visuals::spawn_gltf_data_parts;
 use crate::utils::{graph_bounds, graph_to_world};
 use bevy::camera::{RenderTarget, visibility::RenderLayers};
-use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::render::{
     RenderApp, RenderSystems,
     render_resource::{CachedPipelineState, PipelineCache, TextureFormat},
+    view::Tonemapping,
 };
 use bevy_egui::{EguiTextureHandle, EguiUserTextures, egui};
 use bloq_graph::{
@@ -195,7 +195,6 @@ fn setup_thumbnail_light(mut commands: Commands) {
 
 /// Build one image after the previous camera finishes. Yielding between frames
 /// keeps WASM preloading cooperative without a task's microtask loop blocking paint.
-#[cfg_attr(not(target_arch = "wasm32"), hotpath::measure)]
 fn render_requested_thumbnail(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -267,7 +266,7 @@ fn render_requested_thumbnail(
         Name::new(format!("Thumbnail {key:?} camera")),
         Camera3d::default(),
         // Match the main camera.
-        Tonemapping::None,
+        Tonemapping::Linear,
         Camera {
             order: -100 - index as isize,
             clear_color: ClearColorConfig::Custom(Color::srgba(0.0, 0.0, 0.0, 0.0)),

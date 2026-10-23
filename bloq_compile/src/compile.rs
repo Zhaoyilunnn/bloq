@@ -4,23 +4,23 @@ use std::time::Duration;
 
 use bloq_graph::{
     Basis, Block, BlockGraph, BlockKind, ModuleCertificationError, ModuleCertificationLimits,
-    ModuleSummary, PortRole, RuntimeStabilizerBasis, StabilizerGenerators, default_module_jobs,
+    ModuleSummary, PortRole, StabilizerGenerators, default_module_jobs,
 };
 use glam::{IVec2, IVec3};
 use web_time::Instant;
 
 use crate::block::{
-    LoweringTemplateId, SelectiveTemplates, SpatialHadamardKey, WallSide, compile_fixed_bulk,
-    compile_multiplex_port, compile_realignment, compile_selective, compile_spatial_hadamard,
-    validate_fixed_bulk,
+    LoweringTemplateId, SelectiveTemplates, SpatialHadamardKey, WallSide, compile_bell_port,
+    compile_fixed_bulk, compile_multiplex_port, compile_realignment, compile_selective,
+    compile_spatial_hadamard, validate_fixed_bulk,
 };
 use crate::config::CompileConfig;
 use crate::lower::{PhysicalInput, lower_clifford_proxy};
+use crate::port::PortExpansionMap;
 use crate::signature::{
     BlockSignature, BlockSignatureMap, block_signatures, derive_block_signature,
     join_component_layer_schedules, relocatable_block_signatures,
 };
-use crate::spatial_port::{SpatialPortExpansionMap, expand_spatial_ports};
 use crate::{Bloq, CompileError, Connectivity};
 
 #[path = "registry.rs"]
@@ -35,7 +35,7 @@ struct ProxyPreflight {
     graph: BlockGraph,
     signatures: BlockSignatureMap,
     stabilizers: StabilizerGenerators,
-    spatial_ports: SpatialPortExpansionMap,
+    ports: PortExpansionMap,
 }
 
 /// Metadata key for the code distance used to compile a [`Bloq`].
@@ -44,25 +44,6 @@ pub const CODE_DISTANCE_METADATA_KEY: &str = "bloq_compile.code_distance";
 pub const CONVENTION_METADATA_KEY: &str = "bloq_compile.convention";
 /// Metadata key for the seed used to sample a random Clifford proxy path.
 pub const CLIFFORD_PROXY_SEED_METADATA_KEY: &str = "bloq_compile.clifford_proxy_seed";
-
-/// The `z` shift that `BlockGraph::with_zero_min_z` applies to `graph`.
-///
-/// Module summaries and site relocations are both expressed in the source
-/// module's coordinates, so both must be moved by exactly this offset before
-/// they line up with the normalized graph.
-fn module_normalization_offset(
-    graph: &BlockGraph,
-    module: &ModuleSummary,
-) -> Result<IVec3, CompileError> {
-    let min_z = graph.spans().map_or(0, |(_, _, span)| *span.start());
-    let z = i32::try_from(-i64::from(min_z)).map_err(|_| {
-        ModuleCertificationError::InvalidConnection {
-            module: module.name().to_string(),
-            message: "module normalization exceeds i32 coordinates".to_string(),
-        }
-    })?;
-    Ok(IVec3::new(0, 0, z))
-}
 
 /// Qubit-layout offset of the block at grid position `block_xy`:
 /// `block_xy · (2·distance + 2)`.
@@ -145,9 +126,9 @@ impl CompiledObject {
 struct PreparedProxy {
     graph: BlockGraph,
     stabilizers: StabilizerGenerators,
-    spatial_ports: SpatialPortExpansionMap,
+    ports: PortExpansionMap,
     compiled: CompiledTemplateMap,
-    spatial_port_templates: CompiledTemplateMap,
+    port_templates: CompiledTemplateMap,
     plan: crate::lower::LinkedPlanInput,
     temporal_templates: crate::FxMap<crate::lower::TemplatePlan, LoweringTemplateId>,
     wall_templates: crate::FxMap<crate::lower::SpatialPipeRef, LoweringTemplateId>,
@@ -155,6 +136,8 @@ struct PreparedProxy {
     template_pool: crate::block::LoweringTemplatePool,
 }
 
+/// Selector-free physical inventory. Selective entries retain both measurement
+/// templates; Boolean bindings and record identities belong to linked instances.
 pub(crate) struct PreparedDefinitionObject {
     name: String,
     dependencies: Vec<Arc<PreparedDefinitionObject>>,
@@ -280,18 +263,21 @@ fn relocate_definition_sites(
 fn select_link_signatures(
     config: CompileConfig,
     graph: &BlockGraph,
-    spatial_ports: &SpatialPortExpansionMap,
+    ports: &PortExpansionMap,
     #[cfg(test)] builds: &std::sync::atomic::AtomicUsize,
 ) -> Result<BlockSignatureMap, CompileError> {
     #[cfg(test)]
     builds.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let schedules = join_component_layer_schedules(graph)?;
-    let mut signatures = block_signatures(graph, &schedules, config.code_distance())?;
-    for expansion in spatial_ports.values() {
+    let mut signatures = block_signatures(graph, &schedules, config)?;
+    for (source, dir) in ports
+        .values()
+        .filter_map(|port| port.cube_pipe_dir().map(|dir| (port.source, dir)))
+    {
         let signature = signatures
-            .get_mut(&expansion.source)
+            .get_mut(&source)
             .expect("signature map contains the derived cube");
-        signature.connectivity = signature.connectivity.with_pipe(expansion.cube_pipe_dir());
+        signature.connectivity = signature.connectivity.with_pipe(dir);
     }
     for &signature in signatures.values() {
         validate_fixed_bulk(signature)?;
@@ -302,7 +288,7 @@ fn select_link_signatures(
 fn select_module_link_templates_with_schedule(
     config: CompileConfig,
     graph: &BlockGraph,
-    spatial_ports: &SpatialPortExpansionMap,
+    ports: &PortExpansionMap,
     definitions: &[Arc<PreparedDefinitionObject>],
     sites: &[PreparedSiteRelocation],
     schedules: &crate::signature::LayerScheduleMap,
@@ -316,8 +302,11 @@ fn select_module_link_templates_with_schedule(
                 .get_block(site.position)
                 .expect("module relocation names a linked block");
             let mut graph_connectivity = BlockSignature::graph_connectivity(block, graph);
-            if let Some(expansion) = spatial_ports.get(&site.position) {
-                graph_connectivity = graph_connectivity.with_pipe(expansion.cube_pipe_dir());
+            let cube_pipe = ports
+                .get(&site.position)
+                .and_then(|port| port.cube_pipe_dir());
+            if let Some(dir) = cube_pipe {
+                graph_connectivity = graph_connectivity.with_pipe(dir);
             }
             let surgery_side = (block.kind() == BlockKind::T).then(|| t_sides[&site.position]);
             let mut linked_signature = derive_block_signature(
@@ -327,10 +316,8 @@ fn select_module_link_templates_with_schedule(
                 crate::signature::layer_schedule_at(schedules, site.position),
                 surgery_side,
             )?;
-            if let Some(expansion) = spatial_ports.get(&site.position) {
-                linked_signature.connectivity = linked_signature
-                    .connectivity
-                    .with_pipe(expansion.cube_pipe_dir());
+            if let Some(dir) = cube_pipe {
+                linked_signature.connectivity = linked_signature.connectivity.with_pipe(dir);
             }
             let variant = DefinitionVariantKey {
                 local_position: site.local_position,
@@ -532,13 +519,13 @@ pub struct CompileContext {
     flat_signature_builds: std::sync::atomic::AtomicUsize,
 }
 
-/// Per-site branch pins for the Clifford-proxy distance oracle:
-/// one bit per selective block, consumed in [`ordered_blocks`] order.
+/// Per-site branch pins for the Clifford-proxy distance oracle: one bit per
+/// selective block in expanded `(z, x, y)` order, over the certified source.
 #[derive(Debug)]
 struct CliffordProxyPins {
     pins: Vec<bool>,
     purpose: CliffordProxyPurpose,
-    source_summary: Option<Arc<ModuleSummary>>,
+    summary: Arc<ModuleSummary>,
 }
 
 /// Which consumer requested a pinned Clifford artifact.
@@ -573,11 +560,10 @@ enum CliffordProxyPurpose {
 ///   arms only and cannot choose an authored graph region.
 /// - The action track (feedback, conditional-S corrections) is dropped —
 ///   Clifford frame corrections cannot change circuit distance.
-/// - Hierarchical inputs reuse their composed source certificate; topology is
-///   expanded only for this physical oracle.
-/// - Source stabilizer rows are reused and resolved through the pinned fills,
-///   without re-deriving a basis from the rewritten graph. Output frames use
-///   those resolved rows without replaying source actions.
+/// - The complete source relation is certified before the pins restrict it,
+///   so a pin cannot hide an invalid alternative. Public rows are the source's
+///   planned readouts and frames under the pins; hierarchical inputs reuse
+///   their composed certificate.
 ///
 /// The result is a fully determined program the static Stim backend accepts,
 /// suitable for `shortest_graphlike_error` / undetectable-error searches.
@@ -605,7 +591,12 @@ pub fn compile_clifford_proxy(
     graph: &BlockGraph,
     pins: &[bool],
 ) -> Result<CompileArtifacts, CompileError> {
-    compile_proxy(config, graph, pins, CliffordProxyPurpose::Distance)
+    compile_proxy(
+        config,
+        graph,
+        |_| Ok(pins.to_vec()),
+        CliffordProxyPurpose::Distance,
+    )
 }
 
 /// Compile one seeded random static Clifford proxy path.
@@ -623,15 +614,11 @@ pub fn compile_random_clifford_proxy(
     graph: &BlockGraph,
     seed: u64,
 ) -> Result<CompileArtifacts, CompileError> {
-    let flat = flat_proxy_graph(config, graph)?;
-    let source = flat.as_ref().unwrap_or(graph);
-    let pins = random_proxy_pins(source, seed)?;
-    let mut artifacts = compile_pinned_clifford_proxy(
+    let mut artifacts = compile_proxy(
         config,
-        source,
-        &pins,
+        graph,
+        |source| random_proxy_pins(source, seed),
         CliffordProxyPurpose::Distance,
-        graph.has_module_structure().then_some(graph),
     )?;
     artifacts.bloq.insert_metadata(
         CLIFFORD_PROXY_SEED_METADATA_KEY,
@@ -641,9 +628,6 @@ pub fn compile_random_clifford_proxy(
 }
 
 fn random_proxy_pins(graph: &BlockGraph, seed: u64) -> Result<Vec<bool>, CompileError> {
-    // Random projection drops every action, so reject unsupported structural
-    // composition before that rewrite can hide the Branch source.
-    reject_structural_proxy(graph)?;
     let (_, replacements) = graph.randomly_resolve_selectives(seed)?;
     let pins = ordered_blocks(graph)
         .into_iter()
@@ -667,8 +651,9 @@ fn random_proxy_pins(graph: &BlockGraph, seed: u64) -> Result<Vec<bool>, Compile
 
 /// Compile a pinned detector-slice proxy.
 ///
-/// Selectives resolve the source stabilizer basis, while T regions remain for
-/// display and are tracked with the slice engine's T-to-S substitution.
+/// Pins restrict the certified source relation as in
+/// [`compile_clifford_proxy`], while T regions remain for display and are
+/// tracked with the slice engine's T-to-S substitution.
 ///
 /// # Errors
 ///
@@ -680,45 +665,29 @@ pub fn compile_detslice_proxy(
     graph: &BlockGraph,
     pins: &[bool],
 ) -> Result<CompileArtifacts, CompileError> {
-    compile_proxy(config, graph, pins, CliffordProxyPurpose::Detslice)
-}
-
-fn flat_proxy_graph(
-    config: CompileConfig,
-    graph: &BlockGraph,
-) -> Result<Option<BlockGraph>, CompileError> {
-    if !graph.has_module_structure() {
-        return Ok(None);
-    }
-    Ok(Some(
-        graph.flatten_with_limits(config.certification_limits())?,
-    ))
-}
-
-fn compile_proxy(
-    config: CompileConfig,
-    graph: &BlockGraph,
-    pins: &[bool],
-    purpose: CliffordProxyPurpose,
-) -> Result<CompileArtifacts, CompileError> {
-    let flat = flat_proxy_graph(config, graph)?;
-    compile_pinned_clifford_proxy(
+    compile_proxy(
         config,
-        flat.as_ref().unwrap_or(graph),
-        pins,
-        purpose,
-        graph.has_module_structure().then_some(graph),
+        graph,
+        |_| Ok(pins.to_vec()),
+        CliffordProxyPurpose::Detslice,
     )
 }
 
-fn compile_pinned_clifford_proxy(
+/// Compile the proxy of `graph` with pins chosen from its expanded source.
+fn compile_proxy(
     config: CompileConfig,
     graph: &BlockGraph,
-    pins: &[bool],
+    pins: impl FnOnce(&BlockGraph) -> Result<Vec<bool>, CompileError>,
     purpose: CliffordProxyPurpose,
-    program: Option<&BlockGraph>,
 ) -> Result<CompileArtifacts, CompileError> {
-    let expected = graph
+    let flat = graph
+        .has_module_structure()
+        .then(|| graph.flatten_with_limits(config.certification_limits()))
+        .transpose()?;
+    let source = flat.as_ref().unwrap_or(graph);
+    reject_structural_proxy(source)?;
+    let pins = pins(source)?;
+    let expected = source
         .blocks()
         .filter(|block| block.kind().is_selective())
         .count();
@@ -728,23 +697,36 @@ fn compile_pinned_clifford_proxy(
             actual: pins.len(),
         });
     }
-    static CACHE: OnceLock<crate::SharedCompileCache> = OnceLock::new();
-    // Keep proxy templates separate from real compilations. Pinning only
-    // selects one arm of a cached selective template; T proxy ports use their
-    // ordinary Port signature below, so no cached entry is site-specific.
-    let mut ctx = CompileContext::with_shared_cache(
-        config,
-        CACHE.get_or_init(crate::SharedCompileCache::new),
-    );
-    let source_summary = program
-        .map(|program| ctx.summarize(program, config.certification_limits()))
-        .transpose()?;
+    let mut ctx = proxy_context(config);
+    let summary = ctx.summarize(graph, config.certification_limits())?;
     ctx.clifford_proxy = Some(CliffordProxyPins {
-        pins: pins.to_vec(),
+        pins,
         purpose,
-        source_summary,
+        summary,
     });
-    ctx.compile(graph)
+    ctx.compile(source)
+}
+
+static PROXY_CACHE: OnceLock<crate::SharedCompileCache> = OnceLock::new();
+
+/// Releases cached templates, module artifacts, and summaries used by the
+/// Clifford distance and detector-slice proxy entry points.
+///
+/// These entry points share a process-wide, append-only cache. Clear it between
+/// distance or program sweeps to release retained memory. Compilations already
+/// in flight retain their templates and can finish normally.
+pub fn clear_clifford_proxy_cache() {
+    if let Some(cache) = PROXY_CACHE.get() {
+        cache.clear();
+    }
+}
+
+fn proxy_context(config: CompileConfig) -> CompileContext {
+    // Both distance presentations reuse identical physical proxy templates.
+    CompileContext::with_shared_cache(
+        config,
+        PROXY_CACHE.get_or_init(crate::SharedCompileCache::new),
+    )
 }
 
 /// Cache key for the unified signature→template map: a spatial block signature,
@@ -754,9 +736,11 @@ fn compile_pinned_clifford_proxy(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Signature {
     Block(BlockSignature),
-    MultiplexPort {
+    Port {
         boundary_basis: Basis,
-        output_qubit: IVec2,
+        connectivity: Connectivity,
+        role: PortRole,
+        private_qubit: IVec2,
     },
     Realignment {
         top_basis: Basis,
@@ -837,7 +821,7 @@ impl CompileContext {
         self
     }
 
-    fn check_cancellation(&self) -> Result<(), CompileError> {
+    pub(crate) fn check_cancellation(&self) -> Result<(), CompileError> {
         if let Some(token) = &self.cancellation {
             token.check()?;
         }
@@ -891,6 +875,15 @@ impl CompileContext {
         self.summaries.get_or_summarize(program, limits, Some(jobs))
     }
 
+    fn prepare_relations(
+        &self,
+        program: &BlockGraph,
+        jobs: NonZeroUsize,
+    ) -> Result<Arc<bloq_graph::PreparedModuleRelations>, ModuleCertificationError> {
+        self.summaries
+            .prepare_validated(program, self.config.certification_limits(), jobs)
+    }
+
     /// Compile a target-specific block-graph object for repeated linking.
     /// Both fixed and symbolic inputs cache their finished IR. Exact
     /// definition variants remain reusable across different root programs.
@@ -899,7 +892,6 @@ impl CompileContext {
     ///
     /// Returns [`CompileError`] when module validation, certification, or
     /// lowering fails.
-    #[hotpath::measure]
     pub fn compile_object(&self, program: &BlockGraph) -> Result<CompiledObject, CompileError> {
         let object = self.compile_object_with_jobs(program, default_module_jobs())?;
         self.report_progress(CompileStage::Complete)?;
@@ -919,10 +911,7 @@ impl CompileContext {
             } else {
                 program.validate_resource_limits(self.config.certification_limits())?;
             }
-            let key = hotpath::measure_block!(
-                "module.canonical_key",
-                (hierarchical, program.to_blog_text())
-            );
+            let key = (hierarchical, program.to_blog_text());
             let artifacts = if let Some(cached) = self.cache.module_object(&key) {
                 self.report_progress(CompileStage::CacheReuse)?;
                 cached
@@ -943,48 +932,12 @@ impl CompileContext {
         })
     }
 
-    fn prepare_module_definitions(
-        &self,
-        program: &BlockGraph,
-        jobs: NonZeroUsize,
-    ) -> Result<
-        (
-            bloq_graph::LinkedModuleDefinition,
-            Vec<Arc<PreparedDefinitionObject>>,
-        ),
-        CompileError,
-    > {
-        let (definition_keys, seam_faces) = hotpath::measure_block!("module.abi", {
-            (
-                program.module_definition_cache_keys(),
-                program.module_public_seam_faces(),
-            )
-        });
-        let mut linked = bloq_graph::flatten_module_definition(program, program.root(), "")
-            .map_err(|source| ModuleCertificationError::Graph {
-                module: program.root().name.clone(),
-                source,
-            })?;
-        linked.graph = linked.graph.fix_shadowed_faces();
-        let definitions = hotpath::measure_block!("module.compile_definitions", {
-            self.compile_module_definition_objects(
-                program,
-                &linked,
-                &definition_keys,
-                &seam_faces,
-                jobs,
-            )
-        })?;
-        Ok((linked, definitions))
-    }
-
     /// Link a compiled object to an independently editable Bloq snapshot.
     ///
     /// # Errors
     ///
     /// Returns a target mismatch. Compilation errors are reported when building
     /// the object.
-    #[hotpath::measure]
     pub fn link_object(&self, object: &CompiledObject) -> Result<CompileArtifacts, CompileError> {
         self.check_cancellation()?;
         if object.config != self.config {
@@ -1033,74 +986,39 @@ impl CompileContext {
         Ok(artifacts)
     }
 
-    /// Validate the pinned oracle's source before omitting its action track.
-    #[hotpath::measure]
-    fn preflight_proxy(&self, graph: &BlockGraph) -> Result<ProxyPreflight, CompileError> {
-        graph.validate_resource_limits(self.config.certification_limits())?;
+    /// Certify the pinned oracle's complete source before omitting its action
+    /// track.
+    fn preflight_proxy(&self) -> Result<ProxyPreflight, CompileError> {
         let proxy = self
             .clifford_proxy
             .as_ref()
             .expect("Clifford proxy context");
-        let module_summary = proxy.source_summary.as_deref();
-        let graph = graph.canonical_true_branch_view()?;
-        hotpath::measure_block!("preflight.validate_source", {
-            graph.validate_source()?;
-        });
-        reject_structural_proxy(&graph)?;
-        let linked_offset = module_summary
-            .map(|summary| module_normalization_offset(&graph, summary))
-            .transpose()?
-            .unwrap_or(IVec3::ZERO);
-        let graph = hotpath::measure_block!("preflight.normalize", {
-            graph.with_zero_min_z()?.fix_shadowed_faces()
-        });
-        let (source_graph, mut stabilizers) = if let Some(summary) = module_summary {
-            hotpath::measure_block!("preflight.compose_module_stabilizers", {
-                let zx = bloq_graph::ZXGraph::from_block_graph_for_analysis(&graph)
-                    .map_err(bloq_graph::RuntimeBasisError::from)?;
-                let stabilizers = summary.materialize_stabilizers(&zx, linked_offset)?;
-                (graph.with_analyzed_action_graph(&stabilizers)?, stabilizers)
-            })
-        } else {
-            hotpath::measure_block!(
-                "preflight.analyze_actions",
-                graph.analyze_actions_with_limits(self.config.certification_limits())?
-            )
-        };
-        let (graph, spatial_ports) = hotpath::measure_block!(
-            "preflight.expand_spatial_ports",
-            expand_spatial_ports(&source_graph, self.config.code_distance(), &stabilizers)?
-        );
-        // Module materialization already certifies this on its composed rows.
-        if module_summary.is_none() {
-            stabilizers.validate_measurements_close_before_outputs_with_limits(
-                self.config.certification_limits(),
-            )?;
-        }
-        let changed = stabilizers.prepare_readouts(
-            source_graph.action_graph(),
-            self.config.certification_limits(),
+        let (source_graph, stabilizers) = proxy
+            .summary
+            .materialize_clifford_distance_relation(&proxy.pins)?;
+        let (graph, ports) =
+            crate::port::expand_port_topology(&source_graph, self.config.code_distance())?;
+        self.proxy_preflight(graph.into_owned(), stabilizers, ports)
+    }
+
+    fn proxy_preflight(
+        &self,
+        graph: BlockGraph,
+        stabilizers: StabilizerGenerators,
+        ports: PortExpansionMap,
+    ) -> Result<ProxyPreflight, CompileError> {
+        let signatures = select_link_signatures(
+            self.config,
+            &graph,
+            &ports,
+            #[cfg(test)]
+            &self.flat_signature_builds,
         )?;
-        let graph = if changed {
-            graph.with_analyzed_action_graph(&stabilizers)?
-        } else {
-            graph
-        };
-        let stabilizers = self.proxy_stabilizers(&graph, &stabilizers)?;
-        let signatures = hotpath::measure_block!("preflight.link_signatures", {
-            select_link_signatures(
-                self.config,
-                &graph,
-                &spatial_ports,
-                #[cfg(test)]
-                &self.flat_signature_builds,
-            )?
-        });
         Ok(ProxyPreflight {
             graph,
             signatures,
             stabilizers,
-            spatial_ports,
+            ports,
         })
     }
 
@@ -1114,7 +1032,6 @@ impl CompileContext {
     ///
     /// Any structural, per-block, or lowering failure `graph` provokes under
     /// this context's [`CompileConfig`].
-    #[hotpath::measure]
     pub fn compile(&self, graph: &BlockGraph) -> Result<CompileArtifacts, CompileError> {
         self.cancellable(|| {
             let artifacts = if self.clifford_proxy.is_none() {
@@ -1130,7 +1047,7 @@ impl CompileContext {
             } else {
                 let started_at = Instant::now();
                 self.report_progress(CompileStage::Validation)?;
-                let prepared = self.prepare_proxy(graph)?;
+                let prepared = self.prepare_proxy()?;
                 self.report_progress(CompileStage::Readouts)?;
                 let mut artifacts = Self::lower_prepared_proxy(self.config, prepared)?;
                 artifacts.compile_duration = started_at.elapsed();
@@ -1141,14 +1058,27 @@ impl CompileContext {
         })
     }
 
-    fn compile_module_definition_objects(
+    fn prepare_module_definitions(
         &self,
         program: &BlockGraph,
-        linked_root: &bloq_graph::LinkedModuleDefinition,
-        definition_keys: &std::collections::HashMap<String, String>,
-        seam_faces: &std::collections::HashMap<(String, IVec3), Vec<bloq_graph::Direction>>,
+        summary: &Arc<bloq_graph::PreparedModuleRelations>,
         jobs: NonZeroUsize,
     ) -> Result<Vec<Arc<PreparedDefinitionObject>>, CompileError> {
+        let prepared_definitions = summary.definitions();
+        let definition_keys = prepared_definitions
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name().to_owned(),
+                    definition.implementation_key().to_owned(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let prepared_by_name = prepared_definitions
+            .iter()
+            .map(|definition| (definition.name(), definition))
+            .collect::<crate::FxMap<_, _>>();
+        let seam_faces = program.module_public_seam_faces();
         let orientations_by_name = program.definition_orientations();
         let mut names = definition_keys.keys().cloned().collect::<Vec<_>>();
         names.sort_unstable();
@@ -1169,21 +1099,8 @@ impl CompileContext {
         }
         let compile_one = |name: &String| -> Result<CompiledDefinitionVariants, CompileError> {
             self.check_cancellation()?;
-            // Cache hits retain their complete definition object. Materialize
-            // descendant geometry only for a missing definition, once per build.
-            let mut linked_child;
-            let linked = if name == BlockGraph::ENTRY_MODULE {
-                linked_root
-            } else {
-                let definition = program.module(name).expect("validated definition");
-                linked_child = bloq_graph::flatten_module_definition(program, definition, "")
-                    .map_err(|source| ModuleCertificationError::Graph {
-                        module: program.root().name.clone(),
-                        source,
-                    })?;
-                linked_child.graph = linked_child.graph.fix_shadowed_faces();
-                &linked_child
-            };
+            let definition = prepared_by_name[name.as_str()];
+            let linked = definition.linked();
             let mut variants = crate::FxMap::default();
             for &orientation in &orientations_by_name[name] {
                 self.check_cancellation()?;
@@ -1199,22 +1116,17 @@ impl CompileContext {
                             .map(|position| (position, site))
                     })
                     .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-                // Native lowering plans the root's readouts again. Child
-                // interfaces still need their own C0 proof before linking.
-                if name != BlockGraph::ENTRY_MODULE {
-                    registry::certify_definition(
-                        name,
-                        &oriented_graph,
-                        &oriented_sites,
-                        self.config.certification_limits(),
-                    )?;
+                // Preparation proves each child's authored interface. Rotated
+                // time directions still need their own C0 check before linking.
+                if name != BlockGraph::ENTRY_MODULE
+                    && orientation != bloq_graph::ModuleOrientation::IDENTITY
+                {
+                    definition.certify_interface(&oriented_graph, &oriented_sites)?;
                 }
                 let graph = oriented_graph.canonical_true_branch_view()?;
                 let graph = graph.fix_shadowed_faces();
-                let (graph, spatial_ports) = crate::spatial_port::expand_spatial_port_topology(
-                    &graph,
-                    self.config.code_distance(),
-                )?;
+                let (graph, ports) =
+                    crate::port::expand_port_topology(&graph, self.config.code_distance())?;
                 let local_positions = oriented_sites
                     .iter()
                     .filter(|(_, site)| site.definition == *name && site.instance_path.is_empty())
@@ -1229,8 +1141,8 @@ impl CompileContext {
                     &graph,
                     &signatures,
                     &oriented_sites,
-                    seam_faces,
-                    &spatial_ports,
+                    &seam_faces,
+                    &ports,
                 )?];
                 let regions = graph.branch_regions()?;
                 if !regions.is_empty() {
@@ -1246,8 +1158,8 @@ impl CompileContext {
                         &projected,
                         &signatures,
                         &oriented_sites,
-                        seam_faces,
-                        &spatial_ports,
+                        &seam_faces,
+                        &ports,
                     )?);
                 }
 
@@ -1284,39 +1196,46 @@ impl CompileContext {
             &names,
             parts_by_name,
             cached,
-            definition_keys,
+            &definition_keys,
             &orientations_by_name,
             program,
         ))
     }
 
-    fn prepare_proxy(&self, graph: &BlockGraph) -> Result<PreparedProxy, CompileError> {
+    fn prepare_proxy(&self) -> Result<PreparedProxy, CompileError> {
         let ProxyPreflight {
             graph,
             signatures,
             stabilizers,
-            spatial_ports,
-        } = self.preflight_proxy(graph)?;
+            ports,
+        } = self.preflight_proxy()?;
         self.report_progress(CompileStage::Templates)?;
         let mut compiled = self.compile_blocks(&graph, &ordered_blocks(&graph), &signatures)?;
-        for expansion in spatial_ports.values() {
+        for (source, dir) in ports
+            .values()
+            .filter_map(|port| port.cube_pipe_dir().map(|dir| (port.source, dir)))
+        {
             let derived = compiled
-                .get_mut(&expansion.source)
+                .get_mut(&source)
                 .expect("derived cube was compiled");
-            derived.graph_connectivity = derived
-                .graph_connectivity
-                .with_pipe(expansion.cube_pipe_dir());
+            derived.graph_connectivity = derived.graph_connectivity.with_pipe(dir);
         }
-        let spatial_port_templates = self.compile_spatial_port_templates(&spatial_ports)?;
+        let port_templates = self.compile_port_templates(&ports)?;
+        for port in ports.values().filter(|port| !port.is_spatial()) {
+            compiled
+                .get_mut(&port.source)
+                .expect("temporal Port was compiled")
+                .template = port_templates[&port.source].template;
+        }
         let plan = crate::lower::LinkedPlanInput::from_module_graph(
             &graph,
-            &spatial_ports,
+            &ports,
             compiled.keys().copied(),
         );
         let temporal_templates = self.compile_temporal_template_plans(plan.temporal_templates())?;
-        let wall_templates = self.compile_spatial_template_walls(&graph, plan.spatial_walls())?;
-        let needs_padding =
-            !spatial_ports.is_empty() || graph.pipes().any(|pipe| !pipe.dir().is_spatial());
+        let wall_templates =
+            self.compile_spatial_template_walls(&graph, &ports, plan.spatial_walls())?;
+        let needs_padding = !ports.is_empty() || graph.pipes().any(|pipe| !pipe.dir().is_spatial());
         let padding_templates = self
             .cache
             .padding
@@ -1325,9 +1244,9 @@ impl CompileContext {
         Ok(PreparedProxy {
             graph,
             stabilizers,
-            spatial_ports,
+            ports,
             compiled,
-            spatial_port_templates,
+            port_templates,
             plan,
             temporal_templates,
             wall_templates,
@@ -1343,9 +1262,9 @@ impl CompileContext {
         let PreparedProxy {
             graph,
             stabilizers,
-            spatial_ports,
+            ports,
             compiled,
-            spatial_port_templates,
+            port_templates,
             plan,
             temporal_templates,
             wall_templates,
@@ -1358,8 +1277,8 @@ impl CompileContext {
                 graph: &graph,
                 plan: &plan,
                 compiled: &compiled,
-                spatial_port_templates: &spatial_port_templates,
-                spatial_ports: &spatial_ports,
+                port_templates: &port_templates,
+                ports: &ports,
                 temporal_templates: &temporal_templates,
                 wall_templates: &wall_templates,
                 template_pool: &template_pool,
@@ -1392,7 +1311,7 @@ impl CompileContext {
         signatures: &BlockSignatureMap,
         module_sites: &std::collections::HashMap<IVec3, bloq_graph::MaterializedModuleSite>,
         seam_faces: &std::collections::HashMap<(String, IVec3), Vec<bloq_graph::Direction>>,
-        spatial_ports: &SpatialPortExpansionMap,
+        ports: &PortExpansionMap,
     ) -> Result<CompiledDefinitionVariantMap, CompileError> {
         let mut inventory = CompiledDefinitionVariantMap::default();
         for (&position, &signature) in signatures {
@@ -1401,11 +1320,9 @@ impl CompileContext {
                 .expect("compiled site belongs to the prepared graph");
             let mut signature = signature;
             let mut exact_graph_connectivity = BlockSignature::graph_connectivity(block, graph);
-            if let Some(expansion) = spatial_ports.get(&position) {
-                exact_graph_connectivity =
-                    exact_graph_connectivity.with_pipe(expansion.cube_pipe_dir());
-                signature.connectivity =
-                    signature.connectivity.with_pipe(expansion.cube_pipe_dir());
+            if let Some(dir) = ports.get(&position).and_then(|port| port.cube_pipe_dir()) {
+                exact_graph_connectivity = exact_graph_connectivity.with_pipe(dir);
+                signature.connectivity = signature.connectivity.with_pipe(dir);
             }
             let site = module_sites
                 .get(&position)
@@ -1465,7 +1382,7 @@ impl CompileContext {
                 if schedules.is_empty() {
                     let mut candidate = signature;
                     candidate.connectivity = template_connectivity;
-                    if candidate.kind == BlockKind::T {
+                    if candidate.kind == BlockKind::T && !self.config.prepare_t_with_mpps() {
                         for side in [
                             bloq_graph::Direction::YMINUS,
                             bloq_graph::Direction::XPLUS,
@@ -1534,7 +1451,6 @@ impl CompileContext {
         Ok(inventory)
     }
 
-    #[hotpath::measure]
     fn compile_blocks(
         &self,
         graph: &BlockGraph,
@@ -1577,29 +1493,37 @@ impl CompileContext {
         Ok(compiled)
     }
 
-    fn compile_spatial_port_templates(
+    fn compile_port_templates(
         &self,
-        spatial_ports: &SpatialPortExpansionMap,
+        ports: &PortExpansionMap,
     ) -> Result<CompiledTemplateMap, CompileError> {
         let mut compiled = CompiledTemplateMap::default();
-        for expansion in spatial_ports.values().copied() {
+        for expansion in ports.values().copied() {
             self.check_cancellation()?;
-            let connectivity = Connectivity::ISOLATED.with_pipe(expansion.port_pipe_dir());
-            let template = if expansion.role == PortRole::Multiplex {
-                let output_qubit = expansion
-                    .output_qubit
-                    .expect("Multiplex expansions allocate an output qubit");
+            let connectivity = Connectivity::ISOLATED.with_pipe(expansion.pipe_dir);
+            let template = if let Some(private_qubit) = expansion.private_qubit {
                 TemplateRef::Fixed(self.cache.get_or_compile_fixed(
-                    Signature::MultiplexPort {
-                        boundary_basis: expansion.boundary_basis(),
-                        output_qubit,
+                    Signature::Port {
+                        boundary_basis: expansion.boundary_basis,
+                        connectivity,
+                        role: expansion.role,
+                        private_qubit,
                     },
                     || {
-                        compile_multiplex_port(
-                            expansion.boundary_basis(),
-                            self.config.code_distance(),
-                            output_qubit,
-                        )
+                        if expansion.role == PortRole::Multiplex {
+                            compile_multiplex_port(
+                                expansion.boundary_basis,
+                                self.config.code_distance(),
+                                private_qubit,
+                            )
+                        } else {
+                            compile_bell_port(
+                                expansion.boundary_basis,
+                                connectivity,
+                                self.config.code_distance(),
+                                private_qubit,
+                            )
+                        }
                     },
                 )?)
             } else {
@@ -1607,7 +1531,7 @@ impl CompileContext {
                     kind: BlockKind::Port,
                     rounds: None,
                     connectivity,
-                    boundary_basis: Some(expansion.boundary_basis()),
+                    boundary_basis: Some(expansion.boundary_basis),
                     layer_schedule: None,
                     surgery_side: None,
                 })?
@@ -1680,41 +1604,6 @@ impl CompileContext {
         }
     }
 
-    /// Stabilizers of the fixed Clifford program emitted by the proxy: T nodes
-    /// are ideal input ports and each selective is filled from its site pin.
-    fn proxy_stabilizers(
-        &self,
-        graph: &BlockGraph,
-        stabilizers: &StabilizerGenerators,
-    ) -> Result<StabilizerGenerators, CompileError> {
-        let proxy = self
-            .clifford_proxy
-            .as_ref()
-            .expect("caller checked the proxy is active");
-        let basis = RuntimeStabilizerBasis::from_generators(stabilizers).with_t_nodes_as_ports();
-        let mut pins = proxy.pins.iter().copied();
-        let mut fills = Vec::new();
-        for block in ordered_blocks(graph) {
-            let BlockKind::Selective(kind) = block.kind() else {
-                continue;
-            };
-            let pin = pins
-                .next()
-                .expect("compile_clifford_proxy validated the selective pin count");
-            let chosen = if pin {
-                kind.pauli_if_true()
-            } else {
-                kind.pauli_if_false()
-            };
-            fills.push((block.pos(), chosen));
-        }
-        debug_assert!(pins.next().is_none());
-
-        // Resolve the source rows in the selected arms; re-solving the pinned
-        // graph would replace the observable basis being tested.
-        Ok(basis.apply_selective_fills(&fills)?.into_generators())
-    }
-
     fn compile_temporal_template_plans(
         &self,
         plans: impl IntoIterator<Item = crate::lower::TemplatePlan>,
@@ -1731,13 +1620,14 @@ impl CompileContext {
     fn compile_spatial_template_walls(
         &self,
         graph: &BlockGraph,
+        ports: &PortExpansionMap,
         walls: impl IntoIterator<Item = crate::lower::SpatialPipeRef>,
     ) -> Result<crate::FxMap<crate::lower::SpatialPipeRef, LoweringTemplateId>, CompileError> {
         let mut templates = crate::FxMap::default();
         for wall in walls {
             self.check_cancellation()?;
             let distance = self.config.code_distance();
-            let key = spatial_hadamard_key(graph, wall, distance)?;
+            let key = spatial_hadamard_key(graph, ports, wall, distance)?;
             let template = self
                 .cache
                 .get_or_compile_fixed(Signature::SpatialHadamardPipe(key), || {
@@ -1772,6 +1662,7 @@ impl CompileContext {
 /// defensive because `Walking` signatures omit spatial faces.
 fn spatial_hadamard_key(
     graph: &BlockGraph,
+    ports: &PortExpansionMap,
     wall: crate::lower::SpatialPipeRef,
     distance: u32,
 ) -> Result<SpatialHadamardKey, CompileError> {
@@ -1793,7 +1684,15 @@ fn spatial_hadamard_key(
         bloq_graph::UDirection::Z => unreachable!("spatial Hadamard walls are not temporal"),
     };
     let make_side = |block: &Block, kind: bloq_graph::CubeKind| {
-        let connectivity = BlockSignature::template_connectivity(block, graph);
+        let mut connectivity = BlockSignature::template_connectivity(block, graph);
+        // The positionless Port half leaves this face open in the cube template.
+        // The wall must make the same data-collapse decision as that cube.
+        if let Some(dir) = ports
+            .get(&block.pos())
+            .and_then(|port| port.cube_pipe_dir())
+        {
+            connectivity = connectivity.with_pipe(dir);
+        }
         WallSide {
             temporal_basis: kind.z(),
             connectivity,
@@ -1821,7 +1720,6 @@ fn spatial_hadamard_key(
 ///
 /// Free-standing rather than a method because the cache runs it outside its
 /// lock: it takes only the config values it needs, never the context.
-#[hotpath::measure]
 fn compile_signature(
     signature: BlockSignature,
     distance: u32,
@@ -2081,24 +1979,42 @@ mod tests {
     }
 
     #[test]
-    fn clifford_proxy_preserves_source_generator_selection_and_order() {
-        let graph = GalleryItem::CNOT
-            .build()
-            .flatten()
-            .expect("gallery graph expands");
-        let mut source = graph.stabilizers().unwrap();
-        source.generators.reverse();
-        source.generators.pop().expect("CNOT has generators");
-        let ctx = CompileContext {
-            clifford_proxy: Some(CliffordProxyPins {
-                pins: Vec::new(),
-                purpose: CliffordProxyPurpose::Distance,
-                source_summary: None,
-            }),
-            ..CompileContext::new(CompileConfig::default())
-        };
-        let resolved = ctx.proxy_stabilizers(&graph, &source).unwrap();
-        assert_eq!(resolved.generators, source.generators);
+    fn clifford_proxy_checks_correlated_pins_and_limits() {
+        let graph = BlockGraph::from_blog_text(
+            "BLOG 1.0\n\n  0: Port [0,0,0]\n  1: XZ [0,0,1]\n  2: Port [2,0,0]\n  3: XZ [2,0,1]\n  4: ZXZ [4,0,0]\n  5: ZXZ [6,0,0]\n  [0,0,0] -> +Z\n  [2,0,0] -> +Z\n\n  a = measure 4\n  b = measure 5\n  resolve 1 if a ^ b\n  resolve 3 if a ^ b\n",
+        ).unwrap();
+        for pins in [[false, false], [true, true]] {
+            let result = compile_clifford_proxy(CompileConfig::new(3), &graph, &pins)
+                .expect("joint controls admit both uniform choices");
+            result.bloq.validate().unwrap();
+            assert!(!result.bloq.has_conditional_membership());
+        }
+        for pins in [[false, true], [true, false]] {
+            assert!(matches!(
+                compile_clifford_proxy(CompileConfig::new(3), &graph, &pins),
+                Err(CompileError::ModuleCertification(
+                    bloq_graph::ModuleCertificationError::CliffordDistanceUnreachablePins { .. }
+                ))
+            ));
+        }
+        assert!(matches!(
+            compile_clifford_proxy(CompileConfig::new(3), &graph, &[false]),
+            Err(CompileError::CliffordProxyPinCount {
+                expected: 2,
+                actual: 1,
+            })
+        ));
+        let limited = CompileConfig::new(3).with_certification_limits(
+            bloq_graph::ModuleCertificationLimits {
+                max_matrix_words: 0,
+                ..bloq_graph::ModuleCertificationLimits::DEFAULT
+            },
+        );
+        assert!(
+            compile_clifford_proxy(limited, &graph, &[false, false])
+                .unwrap_err()
+                .is_resource_limited()
+        );
     }
 
     fn single_cube_runtime_graph() -> BlockGraph {
@@ -2291,6 +2207,10 @@ mod tests {
             bloq_ir::NodeProvenance::BranchSelector { .. }
         )));
 
+        let program = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true))
+            .compile_and_validate(&graph)
+            .unwrap()
+            .bloq;
         let report = bloq_vm::run_bloq(&program, 8, 7).unwrap();
         assert_eq!(report.discarded, 0);
         assert!(report.all_detectors_constant());
@@ -2405,7 +2325,10 @@ mod tests {
                     },
                 ])
                 .unwrap();
-            let context = CompileContext::new(CompileConfig::new(3));
+            CompileContext::new(CompileConfig::new(3))
+                .compile_and_validate(&graph)
+                .expect("cultivation spill avoids both structural arms");
+            let context = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true));
             for module in [false, true] {
                 let program = if module {
                     context.compile(&graph.clone().with_inferred_interface().unwrap())
@@ -2502,7 +2425,9 @@ mod tests {
 
     #[test]
     fn compilation_rejects_measurement_surface_on_output_port() {
-        let graph = BlockGraph::from_blog_text(
+        // Validation rejects this source, so lower it without analysis to
+        // reach each compiler entry point.
+        let source = bloq_graph::parse_blog_to_ast(
             "BLOG 1.0\n\n\
              1: XZX [0,0,1]\n\
              2: Port [0,0,2]\n\
@@ -2517,38 +2442,20 @@ mod tests {
              resolve 5 if mzz\n",
         )
         .unwrap();
-        let stabilizers = graph.stabilizers().unwrap();
-        let measurement = stabilizers
-            .generators
-            .iter()
-            .find(|row| row.measurement_name() == Some("mzz"))
-            .expect("the merge supplies the named measurement");
-        assert_eq!(
-            measurement.stabilizer.port_stabilizer.get(&ivec3(0, 0, 2)),
-            Some(&bloq_graph::Pauli::Z),
-        );
-        assert!(matches!(
-            stabilizers.validate_measurements_close_before_outputs(),
-            Err(bloq_graph::RuntimeBasisError::Stabilizer(
-                bloq_graph::StabilizerError::MeasurementSurfaceTouchesOutputPort {
-                    ref name,
-                    port,
-                }
-            )) if name == "mzz" && port == ivec3(0, 0, 2)
-        ));
-        assert!(matches!(
-            compile_clifford_proxy(CompileConfig::default(), &graph, &[false]),
-            Err(CompileError::RuntimeBasis(
-                bloq_graph::RuntimeBasisError::Stabilizer(
-                    bloq_graph::StabilizerError::MeasurementSurfaceTouchesOutputPort {
-                        ref name,
-                        port,
-                    }
-                )
-            )) if name == "mzz" && port == ivec3(0, 0, 2)
-        ));
+        let graph = bloq_graph::lower_blog_ast_deferred(&source, []).unwrap();
         let context = CompileContext::new(CompileConfig::default());
 
+        assert!(matches!(
+            compile_clifford_proxy(CompileConfig::default(), &graph, &[false]),
+            Err(CompileError::ModuleCertification(
+                bloq_graph::ModuleCertificationError::Runtime {
+                    source: bloq_graph::RuntimeBasisError::Stabilizer(
+                        bloq_graph::StabilizerError::UnavailableControlParity { ref mvar, .. }
+                    ),
+                    ..
+                }
+            )) if mvar == "mzz"
+        ));
         for error in [
             context.compile_and_validate(&graph).unwrap_err(),
             context.compile(&graph).unwrap_err(),
@@ -2564,29 +2471,26 @@ mod tests {
 
     #[test]
     fn t_region_observable_ids_fail_before_wrapping() {
-        let context = CompileContext {
-            clifford_proxy: Some(CliffordProxyPins {
-                pins: vec![false],
-                purpose: CliffordProxyPurpose::Detslice,
-                source_summary: None,
-            }),
-            ..CompileContext::new(CompileConfig::default())
-        };
-        let prepared = context
-            .prepare_proxy(
-                &GalleryItem::T
-                    .build()
-                    .flatten()
-                    .expect("gallery graph expands"),
+        let mut context = CompileContext::new(CompileConfig::default());
+        let summary = context
+            .summarize(
+                &GalleryItem::T.build(),
+                bloq_graph::ModuleCertificationLimits::DEFAULT,
             )
             .unwrap();
+        context.clifford_proxy = Some(CliffordProxyPins {
+            pins: vec![false],
+            purpose: CliffordProxyPurpose::Detslice,
+            summary,
+        });
+        let prepared = context.prepare_proxy().unwrap();
         let plan = crate::lower::LowerPlan::from_linked_input(&prepared.plan);
         let placed = crate::lower::PlacedPlan::new(PhysicalInput {
             graph: &prepared.graph,
             plan: &plan,
             compiled: &prepared.compiled,
-            spatial_port_templates: &prepared.spatial_port_templates,
-            spatial_ports: &prepared.spatial_ports,
+            port_templates: &prepared.port_templates,
+            ports: &prepared.ports,
             temporal_templates: &prepared.temporal_templates,
             wall_templates: &prepared.wall_templates,
             template_pool: &prepared.template_pool,
@@ -2600,7 +2504,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_and_validate_normalizes_a_small_span_starting_at_i32_min() {
+    fn compilation_normalizes_a_small_span_starting_at_i32_min() {
         let port = ivec3(0, 0, i32::MIN);
         let cube = ivec3(0, 0, i32::MIN + 1);
         let mut graph = BlockGraph::new();
@@ -2611,6 +2515,11 @@ mod tests {
 
         ctx.compile_and_validate(&graph)
             .expect("the normalized z span is 0..=1");
+        compile_clifford_proxy(CompileConfig::new(3), &graph, &[])
+            .expect("distance compilation normalizes the same span")
+            .bloq
+            .validate()
+            .unwrap();
     }
 
     #[test]
@@ -3036,7 +2945,7 @@ mod tests {
         let signatures = block_signatures(
             graph,
             &join_component_layer_schedules(graph).expect("no mixed spatial Hadamard walls"),
-            ctx.config.code_distance(),
+            ctx.config,
         )
         .expect("valid graph");
         let blocks = ordered_blocks(graph);
@@ -3288,12 +3197,7 @@ mod tests {
     fn registry_preparations_do_not_decode_unavailable_output_axes() {
         for gallery in [GalleryItem::BellState, GalleryItem::GHZ] {
             let graph = gallery.build().flatten().expect("gallery graph expands");
-            let expected = bloq_graph::ZXGraph::from_block_graph_for_analysis(&graph)
-                .unwrap()
-                .stabilizers()
-                .unwrap()
-                .generators
-                .len();
+            let expected = graph.stabilizers().unwrap().len();
             let context = CompileContext::new(CompileConfig::default());
             for bloq in [
                 registry::compile_graph(&context, &graph).unwrap().bloq,
@@ -4049,7 +3953,7 @@ mod tests {
         let signature_of = |graph: &BlockGraph| {
             let schedules =
                 join_component_layer_schedules(graph).expect("no mixed spatial Hadamard walls");
-            block_signatures(graph, &schedules, DISTANCE).expect("valid graph")[&ivec3(0, 0, 0)]
+            block_signatures(graph, &schedules, config).expect("valid graph")[&ivec3(0, 0, 0)]
         };
         assert_eq!(signature_of(&two_cell), signature_of(&one_cell));
 
@@ -4088,6 +3992,29 @@ mod tests {
         let cold = CompileContext::with_shared_cache(config, &cache);
         assert_eq!(cold.cache.pool_len(), 0);
         assert_eq!(compile_to_binary(&cold, &graph), expected);
+    }
+
+    #[test]
+    fn clearing_proxy_cache_releases_retained_objects_and_recompiles_identically() {
+        // A separate config keeps other concurrently running proxy tests from
+        // retaining this shard while its memory lifetime is checked.
+        let config = CompileConfig::new(3).with_certification_limits(ModuleCertificationLimits {
+            max_expanded_blocks: ModuleCertificationLimits::DEFAULT.max_expanded_blocks - 1,
+            ..ModuleCertificationLimits::DEFAULT
+        });
+        let graph = GalleryItem::XMemory.build();
+        let expected = compile_clifford_proxy(config, &graph, &[])
+            .unwrap()
+            .bloq
+            .to_binary();
+        let retained = Arc::downgrade(&proxy_context(config).cache);
+        assert!(retained.upgrade().is_some());
+
+        clear_clifford_proxy_cache();
+
+        assert!(retained.upgrade().is_none());
+        let rebuilt = compile_clifford_proxy(config, &graph, &[]).unwrap();
+        assert_eq!(rebuilt.bloq.to_binary(), expected);
     }
 
     /// Contexts sharing one cache may compile concurrently; every output must
@@ -4184,30 +4111,6 @@ mod tests {
                 layer_round_ends: vec![3, 6],
             })
         );
-    }
-
-    #[test]
-    fn compile_graph_lowers_ghz_slide_then_glide_gallery_asset() {
-        let graph = GalleryItem::GHZSlideThenGlide
-            .build()
-            .flatten()
-            .expect("gallery graph expands");
-        let ctx = CompileContext::new(CompileConfig::new(3));
-        let variants = graph
-            .fill_ports_auto()
-            .expect("GHZ slide-then-glide ports fill");
-        assert!(!variants.is_empty());
-
-        for (variant, (filled_graph, _)) in variants.iter().enumerate() {
-            let artifacts = ctx.compile(filled_graph).unwrap_or_else(|error| {
-                panic!("GHZ slide-then-glide fill variant {variant} compiles: {error}")
-            });
-
-            artifacts
-                .bloq
-                .validate()
-                .expect("GHZ slide-then-glide template instance refs validate");
-        }
     }
 
     /// The point of `compile(&self)`: one context, many threads, no `&mut`
@@ -4361,6 +4264,198 @@ mod tests {
         assert!(Arc::ptr_eq(&first.artifacts, &second.artifacts));
     }
 
+    fn selective_module_program(kind: &str, boundary: &str, binding: &str) -> BlockGraph {
+        BlockGraph::from_text(&format!(
+            "BLOG 1.0
+module Cap {{
+  in q: data = 0
+  in basis
+  out result = m
+  0: Port [0,0,0] role=input
+  1: {kind} [0,0,1]
+  0 -> +Z
+  resolve 1 if basis
+  m = measure 1
+}}
+module main {{
+  in qa: data = 0
+  in qb: data = 2
+  out x = mx
+  out y = my
+  0: Port [0,0,-1] role=input
+  1: {boundary} [0,0,0]
+  2: Port [3,0,-1] role=input
+  3: {boundary} [3,0,0]
+  4: ZXZ [6,0,-1]
+  5: ZXZ [8,0,-1]
+  0 -> +Z
+  2 -> +Z
+  a: Cap @ [0,0,0]
+  b: Cap @ [3,0,0] rotate Z 90
+  1 -> a.q
+  3 -H> b.q
+  mx = measure 4
+  my = measure 5
+  x => a.basis
+  {binding} => b.basis
+}}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn selective_definition_inventory_matches_guarded_physical_selection() {
+        for kind in ["XY", "XZ", "YZ"] {
+            for boundary in ["ZXZ", "XZX"] {
+                let program = selective_module_program(kind, boundary, "y");
+                let context = CompileContext::new(CompileConfig::default());
+                let prepared = context.compile(&program).unwrap().bloq;
+                let definitions = cached_module_definitions(&context, &program);
+                let cap = &definitions["Cap"];
+                let bases = cap
+                    .variants
+                    .iter()
+                    .filter(|(key, _)| key.local_position == IVec3::Z)
+                    .map(|(key, info)| {
+                        assert!(matches!(info.template, TemplateRef::Selective { .. }));
+                        key.signature.boundary_basis.unwrap()
+                    })
+                    .collect::<crate::FxSet<_>>();
+                assert_eq!(bases, crate::FxSet::from_iter([Basis::X, Basis::Z]));
+                let reference = registry::compile_hierarchy_without_inventory(
+                    &CompileContext::new(CompileConfig::default()),
+                    &program,
+                )
+                .unwrap()
+                .bloq;
+                assert_eq!(
+                    prepared.to_binary(),
+                    reference.to_binary(),
+                    "{kind} {boundary}"
+                );
+                for a in [false, true] {
+                    for b in [false, true] {
+                        let pinned = prepared
+                            .pin_membership(&std::collections::BTreeMap::from([
+                                (bloq_graph::selective_selector_name(ivec3(0, 0, 2)), a),
+                                (bloq_graph::selective_selector_name(ivec3(3, 0, 2)), b),
+                            ]))
+                            .unwrap();
+                        assert!(!pinned.has_conditional_membership());
+                        pinned.validate().unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selective_definition_inventory_reuses_across_parent_bindings() {
+        let cache = crate::SharedCompileCache::new();
+        let config = CompileConfig::default();
+        let independent = selective_module_program("XZ", "ZXZ", "y");
+        let shared = selective_module_program("XZ", "XZX", "x");
+        let first_context = CompileContext::with_shared_cache(config, &cache);
+        let first = first_context.compile_object(&independent).unwrap();
+        let first_definition = cached_module_definitions(&first_context, &independent)
+            .remove("Cap")
+            .unwrap();
+        let second_context = CompileContext::with_shared_cache(config, &cache);
+        let second = second_context.compile_object(&shared).unwrap();
+        let second_definition = cached_module_definitions(&second_context, &shared)
+            .remove("Cap")
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&first.artifacts, &second.artifacts));
+        assert!(Arc::ptr_eq(&first_definition, &second_definition));
+        let first_relations = first_context
+            .prepare_relations(&independent, default_module_jobs())
+            .unwrap();
+        let second_relations = second_context
+            .prepare_relations(&shared, default_module_jobs())
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first_relations, &second_relations));
+        let cap = |relations: &Arc<bloq_graph::PreparedModuleRelations>| {
+            relations
+                .definitions()
+                .into_iter()
+                .find(|definition| definition.name() == "Cap")
+                .unwrap()
+        };
+        assert!(Arc::ptr_eq(&cap(&first_relations), &cap(&second_relations)));
+        let selector_names =
+            [ivec3(0, 0, 2), ivec3(3, 0, 2)].map(bloq_graph::selective_selector_name);
+        let choices = |a, b| {
+            std::collections::BTreeMap::from([
+                (selector_names[0].clone(), a),
+                (selector_names[1].clone(), b),
+            ])
+        };
+        first
+            .artifacts
+            .bloq
+            .pin_membership(&choices(false, true))
+            .unwrap();
+        assert!(matches!(
+            second.artifacts.bloq.pin_membership(&choices(false, true)),
+            Err(bloq_ir::MembershipPinError::UnreachableAssignment)
+        ));
+        for selected in [false, true] {
+            let pinned = second
+                .artifacts
+                .bloq
+                .pin_membership(&choices(selected, selected))
+                .unwrap();
+            let instances = [ivec3(0, 0, 2), ivec3(3, 0, 2)].map(|position| {
+                let (_, node) = pinned
+                    .quantum_nodes()
+                    .find(|(id, _)| {
+                        pinned[*id]
+                            .block_members()
+                            .iter()
+                            .any(|block| block.pos == position)
+                    })
+                    .unwrap();
+                assert_eq!(node.instances.len(), 1);
+                node.instances[0].id
+            });
+            assert_ne!(instances[0], instances[1]);
+            pinned.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn selective_definition_inventory_preserves_feedback_and_output_frames() {
+        for (label, graph) in [
+            ("T", GalleryItem::T.build()),
+            ("phase gradient", GalleryItem::PhaseGradientK4.build()),
+            ("terminal branch", mixed_structural_dynamic_graph()),
+        ] {
+            let program = graph.with_inferred_interface().unwrap();
+            let context = CompileContext::new(CompileConfig::default());
+            let prepared = context.compile(&program).unwrap().bloq;
+            let reference = registry::compile_hierarchy_without_inventory(
+                &CompileContext::new(CompileConfig::default()),
+                &program,
+            )
+            .unwrap()
+            .bloq;
+            assert_eq!(prepared.to_binary(), reference.to_binary(), "{label}");
+            assert!(!prepared.output_frames().is_empty());
+            assert!(
+                cached_module_definitions(&context, &program)
+                    .values()
+                    .any(|definition| {
+                        definition
+                            .variants
+                            .values()
+                            .any(|info| info.template.is_selective())
+                    }),
+                "{label} needs selective inventory coverage"
+            );
+        }
+    }
+
     #[test]
     fn module_link_reports_a_missing_physical_variant() {
         let mut graph = BlockGraph::new();
@@ -4380,7 +4475,7 @@ mod tests {
             select_module_link_templates_with_schedule(
                 CompileConfig::default(),
                 &graph,
-                &SpatialPortExpansionMap::default(),
+                &PortExpansionMap::default(),
                 &definitions,
                 &sites,
                 &crate::signature::join_component_layer_schedules(&graph).unwrap(),
@@ -4471,6 +4566,14 @@ mod tests {
             .compile(&graph)
             .unwrap_err();
         assert!(matches!(error, CompileError::Module(_)), "{error:?}");
+        assert!(error.to_string().contains("missing_port"), "{error}");
+        let error = CompileContext::new(CompileConfig::default())
+            .summarize(&graph, ModuleCertificationLimits::DEFAULT)
+            .unwrap_err();
+        assert!(
+            matches!(error, ModuleCertificationError::Graph { .. }),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("missing_port"), "{error}");
     }
 
@@ -4563,6 +4666,23 @@ module main {
                 parallel.bloq.to_binary(),
                 "{label}"
             );
+            if program.has_continuing_branches() {
+                let orientations = program.definition_orientations();
+                for (name, implementation) in program.module_definition_cache_keys() {
+                    assert!(
+                        serial_context
+                            .cache
+                            .definition_object(&DefinitionObjectCacheKey {
+                                implementation,
+                                orientations: orientations[&name].clone(),
+                            })
+                            .is_none(),
+                        "continuing hierarchies retain guarded physical contexts"
+                    );
+                }
+            } else {
+                assert!(!cached_module_definitions(&serial_context, &program).is_empty());
+            }
         }
     }
 
@@ -4635,7 +4755,7 @@ module main {
         let signatures = select_link_signatures(
             context.config,
             &graph,
-            &SpatialPortExpansionMap::default(),
+            &PortExpansionMap::default(),
             &context.flat_signature_builds,
         )
         .unwrap();
@@ -4708,7 +4828,7 @@ module main {
             select_link_signatures(
                 context.config,
                 &graph,
-                &SpatialPortExpansionMap::default(),
+                &PortExpansionMap::default(),
                 &context.flat_signature_builds,
             )
             .unwrap()[&IVec3::ZERO]
@@ -4734,7 +4854,7 @@ module main {
                     select_link_signatures(
                         CompileConfig::default(),
                         &graph,
-                        &SpatialPortExpansionMap::default(),
+                        &PortExpansionMap::default(),
                         &builds,
                     )
                     .unwrap();

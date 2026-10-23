@@ -5,9 +5,8 @@ Link related issues with `Fixes #123` or `Refs #123`, as appropriate. -->
 
 ## How has this been tested?
 
-<!-- Describe the checks run and their results, with commands needed to reproduce them.
-See CONTRIBUTING.md: `just fmt-check` and `just test <crate>` for Rust changes,
-`just py-test` for Python bindings, or `just ci` for the complete CI gate.
+<!-- List checks run, their results, and any checks still pending.
+Start with `just ci-fast`; see CONTRIBUTING.md for further verification.
 Prose-only changes need a diff and link review. -->
 
 **Test configuration** (where relevant):
@@ -39,6 +38,9 @@ Select exactly one option. AI-assisted submissions must follow the
 - [ ] No — I did not use AI tools to prepare this contribution.
 - [ ] Yes — I used AI tools, reviewed all generated content before submitting,
   completed the disclosure below, and added `Assisted-by:` trailers identifying
-  the tool and model to each AI-assisted commit.
+  the tool and exact model identifier to each AI-assisted commit.
 
-AI assistance details (only if you selected Yes: tool, model, and how it was used):
+AI assistance details (only if you selected Yes: tool, exact model identifier,
+and how it was used):
+
+<!-- Before publishing, follow CONTRIBUTING.md#model-identifier-retrieval. -->

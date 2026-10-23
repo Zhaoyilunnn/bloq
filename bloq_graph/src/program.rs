@@ -9,8 +9,7 @@ use thiserror::Error;
 use crate::ast::Span;
 use crate::graph::LinkBranchOccupancy;
 use crate::zx::{
-    ProjectedExternalTable, ProjectionError, ProjectionLimits, RuntimeBasisError, StabilizerError,
-    ZXGraph,
+    ProjectedExternalTable, ProjectionError, ProjectionLimits, RuntimeBasisError, ZXGraph,
 };
 use crate::{
     Action, Block, BlockGraph, BlockKind, Direction, Expr, PhasedPauliString, Pipe, PortRole,
@@ -380,7 +379,7 @@ pub struct BitBinding {
 pub struct MaterializedModuleSite {
     /// Owning module definition name.
     pub definition: String,
-    /// Dot-qualified path from the root instance.
+    /// Path from the root instance, with instance names separated by `__`.
     pub instance_path: String,
     /// Block position inside its owning definition.
     pub local_position: IVec3,
@@ -436,8 +435,8 @@ pub struct ModuleCertificationLimits {
     /// Guarded readout planning reclaims dead functions at reduction boundaries
     /// before checking this limit; transient operations may allocate more.
     pub max_witness_nodes: usize,
-    /// Maximum attempts in one normalization pass. Internal prefixes, rejected
-    /// candidates, and terminal solves are charged before affine work.
+    /// Maximum row operations when restricting a certified relation to the
+    /// pinned selective choices of a Clifford distance proxy.
     pub max_normalization_states: usize,
     /// Maximum distinct patterns in one guarded local topology/Pauli query.
     /// Continuing branches never enumerate the joint selector assignment space.
@@ -446,17 +445,17 @@ pub struct ModuleCertificationLimits {
 
 impl ModuleCertificationLimits {
     /// Production limits. Cumulative Boolean work is unlimited; allocation,
-    /// materialization, and normalization-search limits remain finite.
+    /// materialization, and restriction limits remain finite.
     pub const DEFAULT: Self = Self {
         max_expanded_blocks: 1_000_000,
         max_expanded_instances: 1_000_000,
         max_occupied_cells: 4_000_000,
         max_local_columns: 1_000_000,
-        max_boolean_nodes: 4_000_000,
+        max_boolean_nodes: 8_000_000,
         max_boolean_steps: usize::MAX,
         max_matrix_words: 16_777_216,
         max_frontier_width: 4_096,
-        max_witness_nodes: 1_000_000,
+        max_witness_nodes: 4_000_000,
         max_normalization_states: 1_000_000,
         max_guarded_domain_size: 4_096,
     };
@@ -552,7 +551,6 @@ pub struct UnknownCertificationLimit(
 pub struct LeafModuleCertificate {
     module: String,
     pub(crate) table: ProjectedExternalTable,
-    pub(crate) stabilizers: crate::StabilizerGenerators,
 }
 
 impl LeafModuleCertificate {
@@ -564,15 +562,6 @@ impl LeafModuleCertificate {
     /// Exact Pauli rows over quantum ports in interface declaration order.
     pub fn boundary_rows(&self) -> impl ExactSizeIterator<Item = &PhasedPauliString> {
         self.table.boundary_rows.iter().map(|row| &row.signed)
-    }
-
-    /// The independently certified public stabilizers for this definition.
-    ///
-    /// Module lowering reuses the named measurement rows instead of asking a
-    /// flattened parent graph to choose new representatives across the child
-    /// boundary.
-    pub fn stabilizers(&self) -> &crate::StabilizerGenerators {
-        &self.stabilizers
     }
 
     /// Expands one retained witness into the leaf ZX graph's dense column order.
@@ -592,6 +581,30 @@ pub enum ModuleCertificationError {
     /// Leaf certification was requested for a definition with children.
     #[error("module '{0}' contains child instances")]
     NotLeaf(String),
+    /// A distance relation needs exactly one choice for each selective block.
+    #[error("module '{module}' needs {expected} Clifford distance pins, got {actual}")]
+    CliffordDistancePinCount {
+        /// Definition being certified.
+        module: String,
+        /// Number of selective blocks.
+        expected: usize,
+        /// Number of supplied pins.
+        actual: usize,
+    },
+    /// No source-outcome assignment reaches the complete requested pin tuple.
+    #[error("module '{module}' cannot reach the requested Clifford distance pins")]
+    CliffordDistanceUnreachablePins {
+        /// Definition being certified.
+        module: String,
+    },
+    /// Structural alternatives must be explicitly projected before this oracle.
+    #[error(
+        "module '{module}' has structural branches unsupported by the Clifford distance oracle"
+    )]
+    CliffordDistanceStructuralBranches {
+        /// Definition being certified.
+        module: String,
+    },
     /// A definition uses a feature unsupported by leaf certification.
     #[error("module '{module}' uses unsupported {feature}")]
     Unsupported {
@@ -1106,6 +1119,10 @@ impl BlockGraph {
     /// # Errors
     ///
     /// Returns an error if the definition is missing or cannot be certified within `limits`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a validated interface port is not a node of its definition.
     pub fn certify_leaf(
         &self,
         name: &str,
@@ -1134,85 +1151,46 @@ impl BlockGraph {
             return Err(ModuleCertificationError::NotLeaf(name.to_string()));
         }
 
-        certify_leaf_body(
-            name,
-            module.local_body(),
-            &module.interface.quantum_ports,
-            limits,
-        )
-    }
-}
+        let graph_error = |source| ModuleCertificationError::Graph {
+            module: name.to_string(),
+            source,
+        };
+        let body = module.local_body().fix_shadowed_faces();
+        let zx = ZXGraph::from_block_graph_for_analysis(&body)
+            .map_err(|source| graph_error(source.into()))?;
+        if zx.total_ids() > limits.max_local_columns {
+            return Err(resource_limit(
+                name,
+                "local ZX columns",
+                zx.total_ids(),
+                limits.max_local_columns,
+            ));
+        }
 
-pub(crate) fn certify_leaf_body(
-    name: &str,
-    source: &BlockGraph,
-    ports: &[QuantumPort],
-    limits: ModuleCertificationLimits,
-) -> Result<LeafModuleCertificate, ModuleCertificationError> {
-    let graph_error = |source| ModuleCertificationError::Graph {
-        module: name.to_string(),
-        source,
-    };
-    let body = source.fix_shadowed_faces();
-    let zx = ZXGraph::from_block_graph_for_analysis(&body)
-        .map_err(|source| graph_error(source.into()))?;
-    if zx.total_ids() > limits.max_local_columns {
-        return Err(resource_limit(
-            name,
-            "local ZX columns",
-            zx.total_ids(),
-            limits.max_local_columns,
-        ));
-    }
-
-    let columns = ports
-        .iter()
-        .map(|port| {
-            zx.node_at(port.position)
-                .expect("validated module port is a ZX node")
-                .id
+        let columns = module
+            .interface
+            .quantum_ports
+            .iter()
+            .map(|port| {
+                zx.node_at(port.position)
+                    .expect("validated module port is a ZX node")
+                    .id
+            })
+            .collect::<Vec<_>>();
+        let table = zx
+            .projected_external_table(
+                &columns,
+                ProjectionLimits {
+                    max_frontier_width: limits.max_frontier_width,
+                    max_witness_nodes: limits.max_witness_nodes,
+                },
+            )
+            .map_err(|error| projection_limit(name, error))?;
+        Ok(LeafModuleCertificate {
+            module: name.to_string(),
+            table,
         })
-        .collect::<Vec<_>>();
-    let table = zx
-        .projected_external_table(
-            &columns,
-            ProjectionLimits {
-                max_frontier_width: limits.max_frontier_width,
-                max_witness_nodes: limits.max_witness_nodes,
-            },
-        )
-        .map_err(|error| projection_limit(name, error))?;
-    let external_basis = table.flow_witness_basis().to_external_basis();
-    let stabilizers = zx
-        .stabilizers_from_external_basis_with_limits(&external_basis, limits)
-        .map_err(|source| match source {
-            StabilizerError::ResourceLimited {
-                phase,
-                observed,
-                limit,
-            } => resource_limit(name, phase, observed, limit),
-            source => graph_error(source.into()),
-        })?;
-    body.with_analyzed_action_graph(&stabilizers)
-        .map_err(&graph_error)?;
-    stabilizers
-        .validate_measurements_close_before_outputs_with_limits(limits)
-        .map_err(|source| match source {
-            RuntimeBasisError::Stabilizer(StabilizerError::ResourceLimited {
-                phase,
-                observed,
-                limit,
-            }) => resource_limit(name, phase, observed, limit),
-            source => ModuleCertificationError::Runtime {
-                module: name.to_string(),
-                source,
-            },
-        })?;
-    Ok(LeafModuleCertificate {
-        module: name.to_string(),
-        table,
-        stabilizers,
-    })
+    }
 }
 
 impl BlockGraph {
@@ -1790,7 +1768,6 @@ fn order_linked_actions(
 
     let mut actions = Vec::new();
     let mut action_scopes = Vec::new();
-    let mut ordered_ranges = Vec::new();
     for (instance, child, child_scopes) in child_actions {
         let bindings = bindings_by_target.remove(&instance).unwrap_or_default();
         action_scopes.extend(std::iter::repeat_n(
@@ -1798,36 +1775,24 @@ fn order_linked_actions(
             bindings.len(),
         ));
         actions.extend(bindings);
-        let start = actions.len();
         debug_assert_eq!(child.len(), child_scopes.len());
         actions.extend(child);
         action_scopes.extend(child_scopes);
-        ordered_ranges.push(start..actions.len());
     }
     debug_assert!(bindings_by_target.is_empty());
-    let start = actions.len();
     action_scopes.extend(std::iter::repeat_n(prefix.to_string(), local_actions.len()));
     actions.extend(local_actions);
-    ordered_ranges.push(start..actions.len());
 
     let mut successors = vec![BTreeSet::new(); actions.len()];
     for (predecessor, consumer, _) in crate::ActionDag::from_actions(&actions).dependencies() {
         successors[predecessor].insert(consumer);
     }
-    for range in ordered_ranges {
-        for (predecessor, consumers) in successors
-            .iter_mut()
-            .enumerate()
-            .take(range.end.saturating_sub(1))
-            .skip(range.start)
-        {
-            consumers.insert(predecessor + 1);
-        }
-    }
     let mut incoming = vec![0usize; actions.len()];
     for consumer in successors.iter().flatten() {
         incoming[*consumer] += 1;
     }
+    // Preserve declaration order only between ready actions. Serializing all
+    // declarations would turn valid forward references into dependency cycles.
     let mut ready = incoming
         .iter()
         .enumerate()
@@ -2244,9 +2209,9 @@ fn validate_bits(
         .collect::<HashSet<_>>();
 
     for output in &module.interface.bit_outputs {
-        for name in expr_names(&output.expr) {
+        for name in output.expr.names().collect::<BTreeSet<_>>() {
             validate_bit_ref(
-                &name,
+                name,
                 &bit_inputs,
                 &local_actions,
                 definitions,
@@ -2411,11 +2376,8 @@ fn port_direction(graph: &BlockGraph, position: IVec3) -> Result<PortDirection, 
     };
     match role {
         PortRole::Auto => Ok(inferred),
-        PortRole::Input if inferred == PortDirection::Input => Ok(inferred),
-        PortRole::Output if inferred == PortDirection::Output => Ok(inferred),
-        PortRole::Input | PortRole::Output => {
-            Err("explicit role disagrees with temporal pipe".to_string())
-        }
+        PortRole::Input => Ok(PortDirection::Input),
+        PortRole::Output => Ok(PortDirection::Output),
         PortRole::Multiplex => unreachable!("multiplex ports returned above"),
     }
 }
@@ -2502,10 +2464,10 @@ fn module_bit_dependencies(
         let action = action_node(node.ordinal);
         dependencies.insert(
             action.clone(),
-            action_expression(&node.action)
-                .map(expr_names)
-                .unwrap_or_default()
+            node.action
+                .referenced_names()
                 .into_iter()
+                .map(str::to_owned)
                 .collect(),
         );
         if let Action::Let { name, .. } | Action::Measure { name, .. } = &node.action {
@@ -2521,7 +2483,7 @@ fn module_bit_dependencies(
     for output in &module.interface.bit_outputs {
         dependencies.insert(
             output_node(&output.name),
-            expr_names(&output.expr).into_iter().collect(),
+            output.expr.names().map(str::to_owned).collect(),
         );
     }
     for instance in &module.instances {
@@ -2601,15 +2563,6 @@ fn action_node(ordinal: usize) -> String {
     format!("@action:{ordinal}")
 }
 
-fn action_expression(action: &Action) -> Option<&Expr> {
-    match action {
-        Action::Let { expr, .. } | Action::DiscardIf(expr) => Some(expr),
-        Action::Resolve { condition, .. } | Action::Branch { condition, .. } => Some(condition),
-        Action::Feedback { condition, .. } => condition.as_ref(),
-        Action::Measure { .. } => None,
-    }
-}
-
 fn dependency_cycle(
     node: &str,
     dependencies: &BitDependencies,
@@ -2655,24 +2608,6 @@ fn collect_input_dependencies(
             collect_input_dependencies(dependency, dependencies, inputs, seen, found);
         }
     }
-}
-
-fn expr_names(expr: &Expr) -> BTreeSet<String> {
-    fn collect(expr: &Expr, names: &mut BTreeSet<String>) {
-        match expr {
-            Expr::Var(name) => {
-                names.insert(name.clone());
-            }
-            Expr::Not(inner) => collect(inner, names),
-            Expr::Binary(_, left, right) => {
-                collect(left, names);
-                collect(right, names);
-            }
-        }
-    }
-    let mut names = BTreeSet::new();
-    collect(expr, &mut names);
-    names
 }
 
 pub(crate) fn split_member(name: &str) -> Option<(&str, &str)> {
@@ -2816,9 +2751,7 @@ fn write_connections(out: &mut String, module: &BlockGraph, ids: &HashMap<IVec3,
 mod tests {
     use super::*;
     use crate::{
-        CubeKind, FeedbackTarget, GalleryItem, Pauli, PauliBasis, SelectiveFixingTarget,
-        SelectiveKind, Stabilizer, StabilizerGenerator, StabilizerGenerators, StabilizerRowKind,
-        parse_inline_graph,
+        CubeKind, FeedbackTarget, GalleryItem, Pauli, PauliBasis, SelectiveKind, parse_inline_graph,
     };
 
     #[test]
@@ -2827,7 +2760,8 @@ mod tests {
 
         let defaults = ModuleCertificationLimits::DEFAULT;
         assert_eq!(defaults.max_boolean_steps, usize::MAX);
-        assert_eq!(defaults.max_boolean_nodes, 4_000_000);
+        assert_eq!(defaults.max_boolean_nodes, 8_000_000);
+        assert_eq!(defaults.max_witness_nodes, 4_000_000);
         assert_eq!(BooleanLimits::DEFAULT.max_steps, 64_000_000);
         let mut diagram = BooleanDecisionDiagram::with_limits(defaults.boolean_limits());
         diagram.charge(512_000_001).unwrap();
@@ -3065,16 +2999,10 @@ mod tests {
         BlockGraph::from_definitions(vec![child, root])
     }
 
-    fn analyzed_body(
-        mut body: BlockGraph,
-        actions: Vec<Action>,
-        generators: Vec<StabilizerGenerator>,
-    ) -> BlockGraph {
+    fn analyzed_body(mut body: BlockGraph, actions: Vec<Action>) -> BlockGraph {
         body.set_actions_deferred_with_inputs(actions, ["i".to_string()])
             .unwrap();
-        let zx = body.to_zx_graph().unwrap();
-        body.with_analyzed_action_graph(&StabilizerGenerators::new(zx, generators))
-            .unwrap()
+        body.analyze_actions().unwrap()
     }
 
     fn y_seam_source() -> String {
@@ -3450,13 +3378,32 @@ module main {
     }
 
     #[test]
-    fn explicit_temporal_port_role_must_match_geometry() {
-        let source = "BLOG 1.0\n\nmodule main {\n  in q: data = 0\n  0: Port [0,0,1] role=input <q>\n  1: ZXZ [0,0,0]\n  1 -> +Z\n}\n";
+    fn explicit_temporal_port_roles_override_geometry() {
+        let source = "BLOG 1.0\n\nmodule main {\n  in q: data = 2\n  out result: data = 0\n  0: Port [0,0,0] role=output\n  1: ZXZ [0,0,1]\n  2: Port [0,0,2] role=input\n  0 -> +Z\n  1 -> +Z\n}\n";
+        let program = parse_inline_graph(source).expect("temporal roles can bend both boundaries");
+        let written = program.to_blog_text();
+        assert_eq!(
+            parse_inline_graph(&written).unwrap().to_blog_text(),
+            written
+        );
 
-        assert!(matches!(
-            parse_inline_graph(source),
-            Err(ModuleError::InvalidModule { .. })
-        ));
+        let inferred = program
+            .materialize_root_graph()
+            .unwrap()
+            .with_inferred_interface()
+            .unwrap();
+        for (position, direction) in [
+            (IVec3::ZERO, PortDirection::Output),
+            (2 * IVec3::Z, PortDirection::Input),
+        ] {
+            assert!(
+                inferred
+                    .interface
+                    .quantum_ports
+                    .iter()
+                    .any(|port| { port.position == position && port.direction == direction })
+            );
+        }
     }
 
     #[test]
@@ -3594,12 +3541,6 @@ module main {
         body.add_block(Block::new(target, BlockKind::Cube(CubeKind::ZXZ)));
         body.add_block(Block::new(IVec3::Z, BlockKind::Cube(CubeKind::ZXZ)));
         body.add_pipe(crate::Pipe::new(target, crate::Direction::ZPLUS));
-        let zx = body.to_zx_graph().unwrap();
-        let row = crate::PauliString::from_terms(
-            zx.total_ids(),
-            (0..zx.total_ids()).map(|column| (column, Pauli::Z)),
-        );
-        let surface = zx.materialize_stabilizer(row);
         let body = analyzed_body(
             body,
             vec![
@@ -3616,12 +3557,6 @@ module main {
                     name: "m".to_string(),
                 },
             ],
-            vec![StabilizerGenerator::new(
-                surface,
-                StabilizerRowKind::Measurement {
-                    name: "m".to_string(),
-                },
-            )],
         );
 
         assert!(matches!(
@@ -3634,7 +3569,7 @@ module main {
     fn selective_dependency_closes_a_child_binding_cycle() {
         let target = IVec3::ZERO;
         let mut body = BlockGraph::new();
-        body.add_block(Block::new(IVec3::NEG_Z, BlockKind::Cube(CubeKind::ZXZ)));
+        body.add_block(Block::new(IVec3::NEG_Z, BlockKind::T));
         body.add_block(Block::new(target, BlockKind::Selective(SelectiveKind::XY)));
         body.add_pipe(crate::Pipe::new(IVec3::NEG_Z, crate::Direction::ZPLUS));
         let body = analyzed_body(
@@ -3648,23 +3583,6 @@ module main {
                     target: crate::MeasureTarget::Node(target),
                     name: "m".to_string(),
                 },
-            ],
-            vec![
-                StabilizerGenerator::new(
-                    Stabilizer::from_interior_nodes([(target, Pauli::X)]),
-                    StabilizerRowKind::Measurement {
-                        name: "m".to_string(),
-                    },
-                ),
-                StabilizerGenerator::new(
-                    Stabilizer::from_interior_nodes([(target, Pauli::Y)]),
-                    StabilizerRowKind::SelectiveFixing {
-                        targets: vec![SelectiveFixingTarget {
-                            pos: target,
-                            forbidden: Pauli::Y,
-                        }],
-                    },
-                ),
             ],
         );
 
@@ -3752,66 +3670,6 @@ module main {
             error,
             ModuleCertificationError::ResourceLimited {
                 phase: "local ZX columns",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn leaf_certification_bounds_closure_searches() {
-        let source = r#"BLOG 1.0
-
-module main {
-  out out: data = 2
-  1: XZX [0, 0, 1]
-  2: Port [0, 0, 2] role=output <out>
-  3: T [1, 0, 0]
-  4: XZX [1, 0, 1]
-  5: YX [1, 0, 2]
-  [0, 0, 1] -> +Z
-  [0, 0, 1] -> +X
-  [1, 0, 0] -> +Z
-  [1, 0, 2] -> -Z
-  mzz = measure 1 -> +X
-  resolve 5 if mzz
-}
-
-"#;
-        let program = parse_inline_graph(source).unwrap();
-        let error = program
-            .certify_leaf(
-                "main",
-                ModuleCertificationLimits {
-                    max_guarded_domain_size: 1,
-                    ..ModuleCertificationLimits::UNLIMITED
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            ModuleCertificationError::ResourceLimited {
-                phase: "guarded-domain branches",
-                observed: 2,
-                limit: 1,
-                ..
-            }
-        ));
-
-        let error = program
-            .certify_leaf(
-                "main",
-                ModuleCertificationLimits {
-                    max_normalization_states: 0,
-                    ..ModuleCertificationLimits::UNLIMITED
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            ModuleCertificationError::ResourceLimited {
-                phase: "selective fixing setup states",
-                observed: 1,
-                limit: 0,
                 ..
             }
         ));
@@ -4079,24 +3937,49 @@ module main {
     }
 
     #[test]
+    fn forward_measurement_references_survive_module_linking() {
+        for nested in [false, true] {
+            let module = if nested { "Leaf" } else { "main" };
+            let mut source = format!(
+                "BLOG 1.0\nmodule {module} {{\n\
+                 0: ZXZ [0, 0, 0]\n1: ZXZ [2, 0, 0]\n\
+                 b = measure 1\ndiscard if a\na = measure 0\n}}\n"
+            );
+            if nested {
+                source.push_str("module main {\n c: Leaf @ [0, 0, 0]\n}\n");
+            }
+            let program = parse_inline_graph(&source).unwrap();
+            let linked = flatten_module_definition(&program, program.root(), "").unwrap();
+            let actions = linked.graph.actions();
+            let prefix = if nested { "c__" } else { "" };
+            assert!(
+                matches!(&actions[0], Action::Measure { name, .. } if name == &format!("{prefix}b"))
+            );
+            assert!(
+                matches!(&actions[1], Action::Measure { name, .. } if name == &format!("{prefix}a"))
+            );
+            assert!(
+                matches!(&actions[2], Action::DiscardIf(Expr::Var(name)) if name == &format!("{prefix}a"))
+            );
+            assert_eq!(linked.action_scopes, vec![if nested { "c" } else { "" }; 3]);
+        }
+    }
+
+    #[test]
     fn discharged_measurements_still_materialize() {
         let program = parse_inline_graph(&measured_chain_source(32)).unwrap();
-        let summary = program
-            .summarize_root(ModuleCertificationLimits {
-                max_frontier_width: 6,
-                ..ModuleCertificationLimits::UNLIMITED
-            })
+        let stabilizers = program
+            .planned_surfaces(
+                &[],
+                ModuleCertificationLimits {
+                    max_frontier_width: 6,
+                    ..ModuleCertificationLimits::UNLIMITED
+                },
+            )
             .unwrap();
-        let graph = program
-            .materialize_root_graph()
-            .unwrap()
-            .fix_shadowed_faces();
-        let zx = crate::ZXGraph::try_from(&graph).unwrap();
-        let stabilizers = summary.materialize_stabilizers(&zx, IVec3::ZERO).unwrap();
 
         assert_eq!(
             stabilizers
-                .generators
                 .iter()
                 .filter(|generator| generator.measurement_name().is_some())
                 .count(),

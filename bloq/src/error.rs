@@ -90,7 +90,6 @@ impl_from! {
     bloq_graph::FillPortsError,
     bloq_graph::StabilizerError,
     bloq_graph::RuntimeBasisError,
-    bloq_graph::SymbolicBasisError,
     bloq_graph::OutputCorrectionError,
     bloq_graph::ResolveDomainError,
     bloq_compile::CompileError,
@@ -116,14 +115,11 @@ impl_from! {
     bloq_stim::StimEmissionError,
     bloq_utils::DirectionParseError,
     bloq_utils::PauliError,
-    bloq_utils::qasm::QasmError,
     bloq_utils::boolean::BooleanResourceError,
     strum::ParseError,
     std::io::Error,
     #[cfg(feature = "graph-verify")]
     bloq_graph::verify::VerifyLogicalError,
-    #[cfg(feature = "graph-verify")]
-    bloq_graph::FeedbackInferenceError,
     #[cfg(feature = "verify")]
     bloq_stim::StimVerifyError,
     #[cfg(feature = "verify")]

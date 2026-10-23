@@ -22,7 +22,6 @@ use crate::systems::camera::reset_camera_to_graph;
 use crate::systems::ui::zx_viewer::simplified_zx_graph_with_cancellation;
 use crate::systems::ui::zx_viewer::{SimplifiedZxView, ZxViewKey};
 use crate::systems::ui::{UiIntent, UiIntentBuffer};
-use crate::utils::displayed_branch_projection;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
@@ -659,11 +658,8 @@ pub(crate) fn schedule_stabilizers_job(
     let revision = graph_state.revision;
     let pool = AsyncComputeTaskPool::get();
     jobs.stabilizers = Some(pool.spawn(async move {
-        let result = match module {
-            Some(program) => displayed_module_stabilizers(&program, &graph),
-            None => displayed_stabilizers(graph).map_err(eyre::Error::from),
-        }
-        .wrap_err("compute stabilizers");
+        let source = module.as_deref().unwrap_or(&graph);
+        let result = displayed_surfaces(source, &graph).wrap_err("compute stabilizers");
         StabilizersJobResult {
             tab_id,
             revision,
@@ -674,36 +670,28 @@ pub(crate) fn schedule_stabilizers_job(
     notifications.record_info("Started stabilizer computation");
 }
 
-fn displayed_stabilizers(graph: BlockGraph) -> Result<Vec<StabilizerGenerator>, BlockGraphError> {
-    let graph = displayed_branch_projection(&graph)?;
-    Ok(graph.stabilizers()?.generators)
-}
-
-/// Reuse certified module surfaces in the preview's coordinates.
-fn displayed_module_stabilizers(
-    program: &bloq_graph::BlockGraph,
+/// Plans the shown branch arms of `graph` from its authored `source`, which is
+/// the graph itself unless it was materialized from modules.
+fn displayed_surfaces(
+    source: &BlockGraph,
     graph: &BlockGraph,
-) -> eyre::Result<Vec<StabilizerGenerator>> {
+) -> Result<Vec<StabilizerGenerator>, BlockGraphError> {
     let assignments = graph
         .branch_definitions()
         .iter()
         .map(|branch| (branch.target, branch.shown_true()))
         .collect::<Vec<_>>();
-    let graph = displayed_branch_projection(graph)?;
-    let zx = bloq_graph::ZXGraph::try_from(&graph)?;
-    let summary = program.summarize_root(bloq_graph::ModuleCertificationLimits::DEFAULT)?;
-    Ok(summary
-        .materialize_projection_stabilizers(&zx, IVec3::ZERO, &assignments)?
-        .generators)
+    source.planned_surfaces(&assignments, bloq_graph::ModuleCertificationLimits::DEFAULT)
 }
 
-/// Validates without computing action metadata twice.
+/// Validates without computing action metadata twice. A hierarchy analyzes
+/// its linked actions during validation instead.
 fn validate_graph_for_editor(graph: BlockGraph) -> Result<BlockGraph, BlockGraphError> {
-    if !graph.has_actions() || graph.has_continuing_branches() {
+    if !graph.has_actions() || !graph.instances.is_empty() {
         graph.validate()?;
         return Ok(graph);
     }
-    graph.analyze_actions().map(|(graph, _)| graph)
+    graph.analyze_actions()
 }
 
 /// Spawns a background job parsing `blog_buffer` into a graph, optionally
@@ -759,9 +747,8 @@ pub(crate) fn schedule_compile_job(
         CompileJobResult {
             tab_id,
             revision,
-            result: source.and_then(|graph| {
-                compilation::compile_downloads(&graph, &request, Some(&progress))
-            }),
+            result: source
+                .and_then(|graph| compilation::compile_downloads(&graph, &request, &progress)),
         }
     }));
     notifications.record_info("Started compilation");
@@ -791,9 +778,8 @@ fn schedule_viewer_compile_job(
         ViewerCompileJobResult {
             tab_id,
             revision,
-            result: source.and_then(|graph| {
-                compilation::compile_for_viewer(&graph, &request, Some(&progress))
-            }),
+            result: source
+                .and_then(|graph| compilation::compile_for_viewer(&graph, &request, &progress)),
         }
     }));
     notifications.record_info("Started Bloq viewer compilation");
@@ -1241,6 +1227,30 @@ pub(crate) fn replace_graph_with_cleanup(
     );
 }
 
+/// Installs a freshly loaded graph and its module source, dropping any pending
+/// branch-arm capture from the previous graph. Shared by active and background
+/// tab loads so both leave the same state.
+fn load_graph_with_cleanup(
+    graph_state: &mut GraphState,
+    editor_state: &mut EditorState,
+    target_state: &mut TargetState,
+    compile_ui: &mut CompileUiState,
+    circuit_viewer: &mut BloqViewerState,
+    graph: BlockGraph,
+    program: Option<BlockGraph>,
+) {
+    graph_state.pending_branch_arm = None;
+    graph_state.source_graph = program.map(std::sync::Arc::new);
+    replace_graph_with_cleanup(
+        graph_state,
+        editor_state,
+        target_state,
+        compile_ui,
+        circuit_viewer,
+        graph,
+    );
+}
+
 /// Like [`replace_graph_with_cleanup`], but also installs a fresh selection
 /// (e.g. the transformed elements after a translate/rotate).
 pub(crate) fn replace_graph_with_cleanup_and_selection(
@@ -1281,9 +1291,7 @@ fn replace_graph_with_cleanup_impl(
     }
     editor_state.sync_after_graph_edit(graph_state);
 
-    target_state.open_window = false;
-    target_state.target = None;
-    target_state.tag_buffer.clear();
+    *target_state = TargetState::default();
 
     compile_ui.reset_for_new_graph();
     circuit_viewer.reset_for_new_graph();
@@ -1592,24 +1600,23 @@ fn apply_parse_blog_result_to_tab(
 }
 
 /// Installs a graph produced for a background tab into that tab's snapshot,
-/// resetting the dependent state exactly as [`replace_graph_with_cleanup`] does
-/// for the active tab, and framing the camera it will be restored with.
+/// resetting the dependent state exactly as an active-tab load does, and
+/// framing the camera it will be restored with.
 pub(super) fn install_graph_into_tab(
     tab: &mut crate::resources::EditorTab,
     graph: BlockGraph,
     program: Option<bloq_graph::BlockGraph>,
     title: Option<String>,
 ) {
-    tab.snapshot.graph_state.pending_branch_arm = None;
-    tab.snapshot.graph_state.source_graph = program.map(std::sync::Arc::new);
-    tab.snapshot.graph_state.graph = graph;
-    tab.snapshot.graph_state.commit();
-    tab.snapshot
-        .editor_state
-        .sync_after_graph_edit(&mut tab.snapshot.graph_state);
-    tab.snapshot.target_state = TargetState::default();
-    tab.snapshot.compile_ui.reset_for_new_graph();
-    tab.snapshot.circuit_viewer.reset_for_new_graph();
+    load_graph_with_cleanup(
+        &mut tab.snapshot.graph_state,
+        &mut tab.snapshot.editor_state,
+        &mut tab.snapshot.target_state,
+        &mut tab.snapshot.compile_ui,
+        &mut tab.snapshot.circuit_viewer,
+        graph,
+        program,
+    );
     tab.snapshot.camera_settings = crate::systems::camera::camera_settings_for_graph(
         &tab.snapshot.graph_state.graph,
         tab.snapshot.editor_state.pipe_length,
@@ -1759,15 +1766,14 @@ fn poll_editor_jobs_system(
         } else {
             match done.result {
                 Ok(parsed) => {
-                    graph_state.pending_branch_arm = None;
-                    graph_state.source_graph = Some(std::sync::Arc::new(parsed.source_graph));
-                    replace_graph_with_cleanup(
+                    load_graph_with_cleanup(
                         &mut graph_state,
                         &mut editor_state,
                         &mut target_state,
                         &mut compile_ui,
                         &mut circuit_viewer,
                         parsed.graph,
+                        Some(parsed.source_graph),
                     );
                     reset_camera_to_graph(
                         &mut camera_transform,
@@ -2535,42 +2541,6 @@ mod tests {
     }
 
     #[test]
-    fn stabilizer_job_uses_the_composed_adder_in_its_display_coordinates() {
-        let parsed = parse_blog_for_editor(GalleryItem::ThreeBitAdder.entry().blog()).unwrap();
-        let graph = crate::utils::displayed_branch_projection(&parsed.graph).unwrap();
-        let state = GraphState {
-            graph: parsed.graph,
-            source_graph: Some(Arc::new(parsed.source_graph)),
-            revision: 1,
-            ..Default::default()
-        };
-        assert!(state.is_composed());
-        let generators = run_stabilizers_job_for_state(state);
-        let readout = generators
-            .iter()
-            .find(|row| row.measurement_name() == Some("bit0_uma__m_ikprime"))
-            .unwrap()
-            .readout_plan()
-            .expect("the raw displayed generator retains its certified physical readout");
-        let outputs = bloq_graph::ZXGraph::try_from(&graph)
-            .unwrap()
-            .output_ports();
-        assert!(!readout.branches.is_empty());
-        for (_, surface) in &readout.branches {
-            assert!(
-                outputs
-                    .iter()
-                    .all(|position| !surface.stabilizer.port_stabilizer.contains_key(position)),
-                "every physical branch must close before live outputs"
-            );
-        }
-        for generator in &generators {
-            bloq_graph::stabilizer_as_gltf_data(generator, &graph, 2.0)
-                .expect("the composed surface fits the displayed graph");
-        }
-    }
-
-    #[test]
     fn stabilizer_result_requires_the_requested_layer_and_view_scope() {
         use crate::resources::EditorMode;
 
@@ -2934,7 +2904,7 @@ mod tests {
     }
 
     #[test]
-    fn active_blog_load_clears_capture_and_undo_restores_it() {
+    fn active_blog_load_resets_attribute_editor_and_undo_restores_capture() {
         use crate::resources::{ImportExportState, PendingBranchArm};
         use bevy::prelude::*;
         let pool = AsyncComputeTaskPool::get_or_init(TaskPool::new);
@@ -2956,6 +2926,11 @@ mod tests {
             Transform::default(),
             super::CameraSettings::default(),
         ));
+        {
+            let mut target = app.world_mut().resource_mut::<TargetState>();
+            target.open_window = true;
+            target.pipe_hadamard_buffer = true;
+        }
         {
             let mut state = app.world_mut().resource_mut::<GraphState>();
             state
@@ -2996,12 +2971,73 @@ mod tests {
                 future::yield_now().await;
             }
         });
+        let target = app.world().resource::<TargetState>();
+        assert!(!target.open_window);
+        assert!(!target.pipe_hadamard_buffer);
         let mut state = app.world_mut().resource_mut::<GraphState>();
         assert!(state.pending_branch_arm.is_none());
         assert!(state.graph.has_block_at(IVec3::X));
         state.undo();
         assert!(state.pending_branch_arm.is_some());
         assert!(state.graph.has_block_at(IVec3::ZERO));
+    }
+
+    #[test]
+    fn background_blog_parse_clears_placement_even_when_the_start_survives() {
+        let mut tabs = EditorTabs::default();
+        let tab_id = tabs.active;
+        let tab = tabs.active_tab_mut();
+        let start = ivec3(0, 0, 0);
+        tab.snapshot
+            .graph_state
+            .graph
+            .add_block(Block::new(start, BlockKind::Cube(CubeKind::ZXZ)));
+        tab.snapshot.graph_state.commit();
+        let revision = tab.snapshot.graph_state.revision;
+        tab.snapshot.editor_state.pipe_start = Some(start);
+        tab.snapshot.editor_state.walking_start = Some(ivec3(0, 1, 0));
+        tab.snapshot.editor_state.hovered_element = Some(GraphElement::Block(start));
+        tab.snapshot.target_state.open_window = true;
+        tab.snapshot.target_state.target = Some(GraphElement::Block(start));
+        tab.snapshot.target_state.pipe_hadamard_buffer = true;
+        let background = tabs.add_empty_tab(&EditorState::default());
+        tabs.set_active(background);
+        let mut parsed = BlockGraph::new();
+        parsed.add_block(Block::new(start, BlockKind::Cube(CubeKind::XZZ)));
+
+        apply_parse_blog_result_to_tab(
+            &mut tabs,
+            ParseBlogJobResult {
+                tab_id,
+                revision,
+                source: String::new(),
+                title: None,
+                result: Ok(ParsedBlog {
+                    source_graph: parsed.clone().with_inferred_interface().unwrap(),
+                    graph: parsed,
+                }),
+            },
+            &mut Notifications::default(),
+        );
+
+        tabs.set_active(tab_id);
+        let snapshot = &mut tabs.active_tab_mut().snapshot;
+        assert_eq!(
+            snapshot.graph_state.graph.get_block(start).unwrap().kind(),
+            BlockKind::Cube(CubeKind::XZZ)
+        );
+        assert!(snapshot.editor_state.pipe_start.is_none());
+        assert!(snapshot.editor_state.walking_start.is_none());
+        assert!(snapshot.editor_state.hovered_element.is_none());
+        assert!(!snapshot.target_state.open_window);
+        assert!(snapshot.target_state.target.is_none());
+        assert!(!snapshot.target_state.pipe_hadamard_buffer);
+        assert!(snapshot.graph_state.source_graph.is_some());
+        snapshot.graph_state.undo();
+        assert_eq!(
+            snapshot.graph_state.graph.get_block(start).unwrap().kind(),
+            BlockKind::Cube(CubeKind::ZXZ)
+        );
     }
 
     #[test]
@@ -3073,19 +3109,6 @@ mod tests {
     }
 
     #[test]
-    fn schedule_stabilizers_job_matches_block_graph_stabilizers_for_t_gallery() {
-        let graph = GalleryItem::T.build().flatten().unwrap();
-        let expected = graph.stabilizers().expect("block graph stabilizers");
-        let actual = run_stabilizers_job(graph);
-        let expected_stabilizers = expected.generators;
-
-        assert_eq!(
-            stabilizer_signatures(&actual),
-            stabilizer_signatures(&expected_stabilizers)
-        );
-    }
-
-    #[test]
     fn schedule_stabilizers_job_projects_displayed_ccz_arms() {
         let mut graph = GalleryItem::CCZGateTeleport.build().flatten().unwrap();
         graph.set_shown_branch_arm("b0", false).unwrap();
@@ -3095,17 +3118,19 @@ mod tests {
             .map(|branch| (branch.target, branch.shown_true()))
             .collect::<Vec<_>>();
         let expected = graph
-            .project_branches(assignments)
-            .unwrap()
-            .stabilizers()
-            .unwrap()
-            .generators;
+            .planned_surfaces(&assignments, bloq_graph::ModuleCertificationLimits::DEFAULT)
+            .unwrap();
+        let shown = graph.project_branches(assignments).unwrap();
         let actual = run_stabilizers_job(graph);
 
         assert_eq!(
             stabilizer_signatures(&actual),
             stabilizer_signatures(&expected)
         );
+        for generator in &actual {
+            bloq_graph::stabilizer_as_gltf_data(generator, &shown, 2.0)
+                .expect("the planned surface fits the displayed arm");
+        }
     }
 
     #[test]

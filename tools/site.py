@@ -58,7 +58,6 @@ def build_snapshot(root, destination, name, source, *, docs_only=False, isolated
     version = package_version(root)
     env = os.environ.copy()
     env["BLOQ_DOCS_VERSION"] = f"Development ({version})" if name == "dev" else name
-    env["BLOQ_DOCS_SOURCE"] = source
     env["BLOQ_DOCS_REF"] = source.split("+", 1)[0]
     # Tags never share compiled dependencies or installed bindings with dev.
     if isolated:
@@ -136,12 +135,11 @@ def stable_alias(output, tag):
 
 def version_manifest(output, editor=None):
     entries = [json.loads(path.read_text()) for path in sorted((output / "docs").glob("*/build.json"))]
-    names = {entry["name"] for entry in entries}
     entries.sort(key=lambda entry: (entry["name"] != "stable", entry["name"] != "dev", entry["name"]))
     previous = output / "versions.json"
     previous_editor = json.loads(previous.read_text()).get("editor") if previous.exists() else None
     manifest = {
-        "default": "stable" if "stable" in names else "dev",
+        "default": "dev",
         "stable": next((entry["tag"] for entry in entries if entry["name"] == "stable"), None),
         "versions": entries,
         "editor": editor or previous_editor,
@@ -196,21 +194,31 @@ def redirect(path, target, title="Python API"):
 def fix_rustdoc_links(root, rustdoc):
     """Resolve literal destinations in generated rustdoc output."""
     versions = {package["name"]: package["version"] for package in tomllib.loads((root / "Cargo.lock").read_text())["package"]}
-    qualified = {
-        "bloq_graph::BlockGraph": "bloq_graph/struct.BlockGraph.html",
-        "bloq_ir::Bloq": "bloq_ir/struct.Bloq.html",
-        "bloq_ir::ClassicalNode::Decode": "bloq_ir/enum.ClassicalNode.html#variant.Decode",
-        "bloq_ir::circuit::CoordCircuit": "bloq_ir/circuit/struct.CoordCircuit.html",
-        "bloq_ir::circuit::CoordCircuit::flatten": "bloq_ir/circuit/struct.CoordCircuit.html#method.flatten",
-        "bloq_ir::circuit::Op": "bloq_ir/circuit/enum.Op.html",
-        "bloq_compile::CompileConfig": "bloq_compile/struct.CompileConfig.html",
-        "bloq_compile::CompileContext": "bloq_compile/struct.CompileContext.html",
-    }
+    # Cold --no-deps builds may leave cross-crate links as literal Rust paths.
+    qualified = {}
+    for path in rustdoc.rglob("*.html"):
+        _, separator, name = path.stem.partition(".")
+        if not separator:
+            continue
+        relative = path.relative_to(rustdoc)
+        symbol = "::".join((*relative.parts[:-1], name))
+        destination = relative.as_posix()
+        qualified.setdefault(symbol, set()).add(destination)
+        for anchor in HtmlReferences(path.read_text()).ids:
+            if anchor.startswith(("method.", "variant.")):
+                member = f"{symbol}::{anchor.split('.', 1)[1]}"
+                qualified.setdefault(member, set()).add(f"{destination}#{anchor}")
     for path in rustdoc.rglob("*.html"):
         original = path.read_text()
-        fixed = original
-        for name, destination in qualified.items():
-            fixed = fixed.replace(f'href="{name}"', f'href="{os.path.relpath(rustdoc / destination, path.parent)}"')
+
+        def replace(match):
+            targets = qualified.get(match[1], ())
+            if len(targets) != 1:
+                return match[0]
+            target = rustdoc / next(iter(targets))
+            return f'href="{os.path.relpath(target, path.parent)}"'
+
+        fixed = re.sub(r'href="([^"\n]*::[^"\n]*)"', replace, original)
         if 'href="crate#per-style"' in fixed:
             fixed = fixed.replace('href="crate#per-style"', f'href="https://docs.rs/yansi/{versions["yansi"]}/yansi/#per-style"')
         if path.relative_to(rustdoc).as_posix() == "bloq_vm/struct.Simulator.html":
@@ -296,7 +304,7 @@ def check_links_and_privacy(output, *, incomplete=False):
             if target is not None and (not target.is_relative_to(output) or not target.is_file()):
                 errors.append(f"{origin.relative_to(output)}: missing CSS asset {reference}")
     forbidden = ("bloq-paper", "bloq-experiments", "/Users/", "/home/", "/var/folders/")
-    text_suffixes = {".html", ".js", ".json", ".svg", ".css", ".txt", ".md", ".rst", ".blog", ".bloqir", ".qasm", ".py"}
+    text_suffixes = {".html", ".js", ".json", ".svg", ".css", ".txt", ".md", ".rst", ".blog", ".bloqir", ".py"}
     for path in output.rglob("*"):
         if path.name == ".doctrees":
             errors.append(f"{path.relative_to(output)}: Sphinx build cache must not be published")
@@ -377,7 +385,7 @@ def main():
             remap = f"--remap-path-prefix={Path.home()}=. --remap-path-prefix={ROOT}=."
             env["RUSTFLAGS"] = f"{env.get('RUSTFLAGS', '')} {remap}".strip()
             run([
-                "bevy", "build", "--release", "--yes", "-p", "bloq_editor", "--bin", "bloq_editor",
+                "bevy", "build", "--locked", "--release", "--yes", "-p", "bloq_editor", "--bin", "bloq_editor",
                 "web", "--bundle", "--wasm-opt=--strip-debug", "--wasm-opt=-Os",
                 "--wasm-opt=--enable-bulk-memory", "--wasm-opt=--enable-nontrapping-float-to-int",
             ], env=env)

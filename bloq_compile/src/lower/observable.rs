@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use bloq_circuit::PauliMap;
 use bloq_graph::{
-    Block, BlockGraph, Direction, Pauli, Stabilizer, StabilizerGenerator, StabilizerGenerators,
+    Block, BlockGraph, Direction, Pauli, StabilizerGenerator, StabilizerGenerators,
     StabilizerRowKind, SurfaceSupport, checked_add_position,
 };
 use bloq_ir::{
@@ -18,8 +18,8 @@ use crate::CompileError;
 use crate::block::gateway::GatewayEntry;
 use crate::block::{LocalStabilizer, LoweringTemplateId, LoweringTemplatePool};
 use crate::compile::CompiledTemplateMap;
+use crate::port::PortExpansionMap;
 use crate::signature::Connectivity;
-use crate::spatial_port::SpatialPortExpansionMap;
 
 use bloq_ir::NodeProvenance;
 
@@ -153,7 +153,7 @@ pub(super) fn resolve_observable_insertions(
     compiled_blocks: &CompiledTemplateMap,
     template_pool: &LoweringTemplatePool,
 ) -> Result<Vec<ObservableChunkInsertion>, CompileError> {
-    resolve_observable_insertions_with_spatial_ports(
+    resolve_observable_insertions_with_ports(
         graph,
         generators,
         compiled_blocks,
@@ -163,20 +163,16 @@ pub(super) fn resolve_observable_insertions(
     )
 }
 
-fn resolve_observable_insertions_with_spatial_ports(
+fn resolve_observable_insertions_with_ports(
     graph: &BlockGraph,
     generators: &[StabilizerGenerator],
     compiled_blocks: &CompiledTemplateMap,
-    spatial_ports: &SpatialPortExpansionMap,
-    spatial_port_templates: &crate::compile::CompiledTemplateMap,
+    ports: &PortExpansionMap,
+    port_templates: &crate::compile::CompiledTemplateMap,
     template_pool: &LoweringTemplatePool,
 ) -> Result<Vec<ObservableChunkInsertion>, CompileError> {
     let mut insertions = Vec::new();
     for (obs_index, stabilizer) in generators.iter().enumerate() {
-        if !statically_resolved(stabilizer, compiled_blocks) {
-            continue;
-        }
-
         // Resolve every block touched by either node or edge support through one
         // gateway path. Edge-only algebraic support is not a different physical
         // category: `build_local_flow_key` reconstructs its junction Pauli.
@@ -199,32 +195,30 @@ fn resolve_observable_insertions_with_spatial_ports(
                     .port_stabilizer
                     .iter()
                     .filter_map(|(&pos, &pauli)| {
-                        (pauli != Pauli::I && spatial_ports.contains_key(&pos)).then_some(pos)
+                        (pauli != Pauli::I && ports.contains_key(&pos)).then_some(pos)
                     }),
             )
             .collect();
         support_positions.sort_unstable_by_key(|pos| (pos.x, pos.y, pos.z));
         support_positions.dedup();
-        insertions.extend(
-            resolve_observable_insertions_at_positions_with_spatial_ports(
-                graph,
-                &stabilizer.stabilizer,
-                &stabilizer.kind,
-                compiled_blocks,
-                template_pool,
-                &support_positions,
-                obs_index as u32,
-                false,
-                spatial_ports,
-                None,
-                None,
-            )?,
-        );
+        insertions.extend(resolve_observable_insertions_at_positions_with_ports(
+            graph,
+            &stabilizer.stabilizer,
+            &stabilizer.kind,
+            compiled_blocks,
+            template_pool,
+            &support_positions,
+            obs_index as u32,
+            false,
+            ports,
+            None,
+            None,
+        )?);
 
         insertions.extend(resolve_spatial_port_observable_insertions(
             &stabilizer.stabilizer,
-            spatial_ports,
-            spatial_port_templates,
+            ports,
+            port_templates,
             template_pool,
             &support_positions,
             obs_index as u32,
@@ -239,7 +233,7 @@ fn resolve_observable_insertions_with_spatial_ports(
     clippy::too_many_arguments,
     reason = "observable resolution needs the complete compiled-site context"
 )]
-pub(super) fn resolve_observable_insertions_at_positions_with_spatial_ports(
+pub(super) fn resolve_observable_insertions_at_positions_with_ports(
     graph: &BlockGraph,
     stabilizer: &impl SurfaceSupport,
     kind: &StabilizerRowKind,
@@ -248,7 +242,7 @@ pub(super) fn resolve_observable_insertions_at_positions_with_spatial_ports(
     support_positions: &[IVec3],
     observable_index: u32,
     external_faces_only: bool,
-    spatial_ports: &SpatialPortExpansionMap,
+    ports: &PortExpansionMap,
     selected_template: Option<(IVec3, LoweringTemplateId)>,
     anchor: Option<super::BoundDynamicAnchor<'_>>,
 ) -> Result<Vec<ObservableChunkInsertion>, CompileError> {
@@ -277,9 +271,7 @@ pub(super) fn resolve_observable_insertions_at_positions_with_spatial_ports(
             pauli,
             stabilizer,
             compiled.graph_connectivity,
-            spatial_ports
-                .get(&node_pos)
-                .map(|port| port.cube_pipe_dir()),
+            ports.get(&node_pos).and_then(|port| port.cube_pipe_dir()),
         );
         if local_flow == LocalStabilizer::isolated(Pauli::I) {
             continue;
@@ -346,18 +338,24 @@ pub(super) fn resolve_observable_insertions_at_positions_with_spatial_ports(
             &entry.measurements,
             observable_index as usize,
         );
-        let operator_in =
-            if external_faces_only && compiled.graph_connectivity.has_pipe(Direction::ZMINUS) {
+        let private = ports
+            .get(&node_pos)
+            .filter(|port| !port.is_spatial())
+            .and_then(|port| port.private_qubit);
+        // External faces keep only a private adapter qubit or an open temporal face.
+        let face = |map: &PauliMap, dir: Direction| match private {
+            Some(qubit) if external_faces_only => {
+                map.get(&qubit).map_or_else(PauliMap::empty, |&pauli| {
+                    PauliMap::from_unique_entries([(qubit, pauli)])
+                })
+            }
+            None if external_faces_only && compiled.graph_connectivity.has_pipe(dir) => {
                 PauliMap::empty()
-            } else {
-                entry.operator_in.clone()
-            };
-        let operator_out =
-            if external_faces_only && compiled.graph_connectivity.has_pipe(Direction::ZPLUS) {
-                PauliMap::empty()
-            } else {
-                entry.operator_out.clone()
-            };
+            }
+            _ => map.clone(),
+        };
+        let operator_in = face(&entry.operator_in, Direction::ZMINUS);
+        let operator_out = face(&entry.operator_out, Direction::ZPLUS);
         insertions.extend(boundary_operator_insertion(
             graph,
             compiled_blocks,
@@ -373,8 +371,8 @@ pub(super) fn resolve_observable_insertions_at_positions_with_spatial_ports(
 
 pub(super) fn resolve_spatial_port_observable_insertions(
     stabilizer: &impl SurfaceSupport,
-    spatial_ports: &SpatialPortExpansionMap,
-    spatial_port_templates: &crate::compile::CompiledTemplateMap,
+    ports: &PortExpansionMap,
+    port_templates: &crate::compile::CompiledTemplateMap,
     template_pool: &LoweringTemplatePool,
     support_positions: &[IVec3],
     observable_index: u32,
@@ -383,7 +381,7 @@ pub(super) fn resolve_spatial_port_observable_insertions(
     let mut insertions = Vec::new();
     for &source in support_positions
         .iter()
-        .filter(|source| spatial_ports.contains_key(source))
+        .filter(|source| ports.get(source).is_some_and(|port| port.is_spatial()))
     {
         // SEM-SPATIAL-PORT: the raw Port Pauli is copied to the virtual
         // temporal half; the derived cube half is resolved separately.
@@ -391,8 +389,8 @@ pub(super) fn resolve_spatial_port_observable_insertions(
         if pauli == Pauli::I {
             continue;
         }
-        let port = spatial_ports[&source];
-        let compiled = &spatial_port_templates[&source];
+        let port = ports[&source];
+        let compiled = &port_templates[&source];
         let template_id = compiled
             .template
             .observable_template()
@@ -420,7 +418,7 @@ pub(super) fn resolve_spatial_port_observable_insertions(
                 bloq_graph::PortRole::Output => (PauliMap::empty(), entry.operator_out.clone()),
                 bloq_graph::PortRole::Multiplex => {
                     let output = port
-                        .output_qubit
+                        .private_qubit
                         .expect("Multiplex expansions allocate an output qubit");
                     let operator_out = entry
                         .operator_out
@@ -453,33 +451,29 @@ pub(super) fn resolve_spatial_port_observable_insertions(
 /// before, then relabels each surviving insertion into instance-global refs,
 /// tagging it with its producing plan node. Returns owned data so the caller can
 /// drop the lowering context before materializing nodes.
-#[hotpath::measure]
 pub(super) fn resolve_observables(
     stabilizers: &StabilizerGenerators,
     context: &BloqLowerContext<'_>,
 ) -> Result<(Vec<ResolvedObservable>, crate::FxSet<u32>), CompileError> {
     let generators = &stabilizers.generators;
-    let mut insertions = resolve_observable_insertions_with_spatial_ports(
+    let mut insertions = resolve_observable_insertions_with_ports(
         context.input.graph,
         generators,
         context.input.compiled,
-        context.input.spatial_ports,
-        context.input.spatial_port_templates,
+        context.input.ports,
+        context.input.port_templates,
         context.input.template_pool,
     )?;
-    insertions.extend(resolve_pipe_observable_insertions(
+    let (pipe_insertions, mut reference_offsets) = resolve_pipe_observable_insertions(
         context.input.graph,
         context.input.plan,
         context.input.compiled,
         context.input.temporal_templates,
         context.input.template_pool,
         generators,
-    )?);
-    let mut reference_offsets = crate::FxSet::default();
+    )?;
+    insertions.extend(pipe_insertions);
     for (index, generator) in generators.iter().enumerate() {
-        if !statically_resolved(generator, context.input.compiled) {
-            continue;
-        }
         let wall_sign = push_wall_observable_insertions(
             context.input.graph,
             context.input.wall_templates,
@@ -490,10 +484,9 @@ pub(super) fn resolve_observables(
             &mut insertions,
         )?;
         if matches!(generator.kind, StabilizerRowKind::Logical)
-            && (wall_sign
-                ^ temporal_hadamard_observable_sign(context.input.graph, &generator.stabilizer))
+            && (wall_sign ^ port_transpose_sign(&generator.stabilizer, context.input.ports, None))
         {
-            reference_offsets.insert(index as u32);
+            crate::xor_toggle(&mut reference_offsets, [index as u32]);
         }
     }
 
@@ -506,24 +499,26 @@ pub(super) fn resolve_observables(
     Ok((resolved, reference_offsets))
 }
 
-/// Constant parity picked up by a logical row crossing temporal Hadamards.
-/// Gateways carry phaseless Paulis, so the `Y_L -> -Y_L` phase must ride as a
-/// classical bit inside the projection's conditioned observable content.
-pub(super) fn temporal_hadamard_observable_sign(
-    graph: &BlockGraph,
-    stabilizer: &Stabilizer,
+/// Bending a wire transposes its Pauli: X/Z are unchanged and Y gains a minus.
+/// Bell XX and ZZ multiply to -YY; gateways intentionally carry support only.
+pub(super) fn port_transpose_sign(
+    surface: &impl SurfaceSupport,
+    ports: &PortExpansionMap,
+    positions: Option<&[IVec3]>,
 ) -> bool {
-    stabilizer
-        .interior_edges
-        .iter()
-        .filter_map(|(&(src, dst), &edge_pauli)| {
-            let pipe = hadamard_temporal_pipe(graph, src, dst)?;
-            Some(realignment_observable_pauli(
-                graph, &pipe, stabilizer, edge_pauli,
-            ))
+    ports
+        .values()
+        .filter(|port| {
+            !port.is_spatial()
+                && positions.is_none_or(|positions| {
+                    positions
+                        .binary_search_by_key(&port.source.to_array(), IVec3::to_array)
+                        .is_ok()
+                })
         })
-        .filter(|pauli| *pauli != Pauli::I)
-        .fold(false, |sign, pauli| sign ^ (pauli == Pauli::Y))
+        .fold(false, |sign, port| {
+            sign ^ (surface.port_pauli(port.source) == Pauli::Y)
+        })
 }
 
 /// Public row values shared by the pinned proxy's frame constraints.
@@ -534,33 +529,12 @@ pub(super) struct MaterializedObservables {
     pub(super) reference_offsets: crate::FxSet<u32>,
 }
 
-/// The statically-resolved generator ordinals — every non-selective-crossing
-/// `Measurement` or `Logical` row (the rows [`statically_resolved`] owns). The
-/// all-rows completeness rule (design §3) materializes an `Observable` for
-/// each, so a row whose gateway resolution yields no records or operators still
-/// surfaces as a constant-`false` observable (zero bit inputs) rather than
-/// silently having no readable value. Selective-crossing rows are excluded
-/// here; the proxy has already pinned them. Selective-internal rows never
-/// become observables.
-pub(super) fn statically_resolved_row_indices(
-    generators: &[StabilizerGenerator],
-    compiled_blocks: &CompiledTemplateMap,
-) -> Vec<u32> {
-    generators
-        .iter()
-        .enumerate()
-        .filter(|(_, generator)| statically_resolved(generator, compiled_blocks))
-        .map(|(index, _)| index as u32)
-        .collect()
-}
-
 /// Materialize the pinned public basis, including empty rows. Static insertions
 /// share one complete recipe per row; guarded/shared fragments use composition
 /// in ordinary lowering.
-#[hotpath::measure]
 pub(super) fn materialize_observable_nodes(
     resolved: Vec<ResolvedObservable>,
-    all_row_indices: &[u32],
+    row_count: u32,
     bloq: &mut Bloq,
     node_map: &[Option<BloqNodeId>],
 ) -> MaterializedObservables {
@@ -590,7 +564,7 @@ pub(super) fn materialize_observable_nodes(
             }
         }
     }
-    for &index in all_row_indices {
+    for index in 0..row_count {
         rows.entry(index).or_default();
     }
     let mut observable_by_index = crate::FxMap::default();
@@ -643,20 +617,20 @@ fn cancel_seam_operators(
         insertions,
         context.input.plan,
         context.input.graph,
+        context.input.ports,
         |source| Ok(context.instance_for_site(source).instance.offset),
     )
 }
 
 /// Shared seam checker for static and branch-conditioned observable lowering.
 /// `offset_for` places each block/pipe-local operator in the global qubit frame.
-#[hotpath::measure]
 pub(super) fn cancel_seam_operators_in_plan(
     insertions: &mut [ObservableChunkInsertion],
     plan: &super::LowerPlan,
     graph: &BlockGraph,
+    ports: &PortExpansionMap,
     mut offset_for: impl FnMut(ChunkSiteSource) -> Result<glam::IVec2, CompileError>,
 ) -> Result<(), CompileError> {
-    use petgraph::graph::NodeIndex;
     use petgraph::visit::EdgeRef;
 
     // One operator-carrying insertion per (site, observable). Measurement-only
@@ -736,15 +710,9 @@ pub(super) fn cancel_seam_operators_in_plan(
             .weight()
             .pipes
             .iter()
-            .map(|pipe| {
-                (
-                    site_for(edge.source(), pipe),
-                    site_for(edge.target(), pipe),
-                    None,
-                )
-            })
-            .chain(edge.weight().spatial_ports.iter().map(|port| {
-                let endpoints = if port.is_input() {
+            .map(|pipe| (site_for(edge.source(), pipe), site_for(edge.target(), pipe)))
+            .chain(edge.weight().ports.iter().map(|port| {
+                if port.has_future_pipe() {
                     (
                         ChunkSiteSource::SpatialPort(port.source),
                         ChunkSiteSource::Block(port.source),
@@ -754,10 +722,9 @@ pub(super) fn cancel_seam_operators_in_plan(
                         ChunkSiteSource::Block(port.source),
                         ChunkSiteSource::SpatialPort(port.source),
                     )
-                };
-                (endpoints.0, endpoints.1, Some(*port))
+                }
             }));
-        for (lower, upper, spatial_port) in seams {
+        for (lower, upper) in seams {
             // Only observables with an operator at one of the two seam sites
             // can cancel or mismatch here; iterate their (ascending) union.
             let lower_obs = obs_by_site.get(&lower).unwrap_or(&empty_obs);
@@ -784,28 +751,47 @@ pub(super) fn cancel_seam_operators_in_plan(
                     }
                     continue;
                 }
-                // Multiplex cancels the exact shared patch and exposes X_out separately.
-                if let Some(port) =
-                    spatial_port.filter(|port| port.role == bloq_graph::PortRole::Multiplex)
-                {
-                    let lower_offset = offset_for(lower)?;
-                    let upper_offset = offset_for(upper)?;
-                    let mut lower_patch = out_idx
-                        .map(|i| insertions[i].operator_out.try_translated(lower_offset))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let upper_patch = in_idx
-                        .map(|i| insertions[i].operator_in.try_translated(upper_offset))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let output_qubit = port
-                        .output_qubit
-                        .expect("Multiplex expansions allocate an output qubit");
-                    let output_global =
-                        bloq_circuit::checked_translate_coordinate(output_qubit, lower_offset)?;
-                    let output_pauli = lower_patch.insert(output_global, bloq_circuit::Pauli::I);
+                // A boundary may carry a private external qubit alongside the shared patch.
+                // Cancel only the patch; the external factor survives on its owning face.
+                let private_at = |site: ChunkSiteSource| match site {
+                    ChunkSiteSource::Block(position) | ChunkSiteSource::SpatialPort(position) => {
+                        ports.get(&position).and_then(|port| port.private_qubit)
+                    }
+                    _ => None,
+                };
+                let lower_private = private_at(lower);
+                let upper_private = private_at(upper);
+                if lower_private.is_some() || upper_private.is_some() {
+                    let mut split = |index: Option<usize>,
+                                     output: bool,
+                                     site,
+                                     private: Option<glam::IVec2>|
+                     -> Result<_, CompileError> {
+                        let map = index.map(|i| {
+                            if output {
+                                &insertions[i].operator_out
+                            } else {
+                                &insertions[i].operator_in
+                            }
+                        });
+                        let mut patch = map.cloned().unwrap_or_default();
+                        let external = private
+                            .and_then(|qubit| {
+                                patch.insert(qubit, Pauli::I).map(|pauli| (qubit, pauli))
+                            })
+                            .map_or_else(PauliMap::empty, |entry| {
+                                PauliMap::from_unique_entries([entry])
+                            });
+                        Ok((patch.try_translated(offset_for(site)?)?, external))
+                    };
+                    let (lower_patch, lower_external) = split(out_idx, true, lower, lower_private)?;
+                    let (upper_patch, upper_external) = split(in_idx, false, upper, upper_private)?;
+                    let multiplex_output = ports
+                        .get(&seam_pos(lower))
+                        .is_some_and(|port| port.role == bloq_graph::PortRole::Multiplex);
                     if lower_patch != upper_patch
-                        || output_pauli.is_some_and(|pauli| pauli != bloq_circuit::Pauli::X)
+                        || (multiplex_output
+                            && lower_external.iter().any(|(_, &pauli)| pauli != Pauli::X))
                     {
                         return Err(CompileError::ObservableSeamMismatch {
                             observable_index: obs,
@@ -814,16 +800,10 @@ pub(super) fn cancel_seam_operators_in_plan(
                         });
                     }
                     if let Some(i) = out_idx {
-                        insertions[i].operator_out =
-                            output_pauli.map_or_else(PauliMap::empty, |_| {
-                                PauliMap::from_unique_entries([(
-                                    output_qubit,
-                                    bloq_circuit::Pauli::X,
-                                )])
-                            });
+                        insertions[i].operator_out = lower_external;
                     }
                     if let Some(i) = in_idx {
-                        insertions[i].operator_in = PauliMap::empty();
+                        insertions[i].operator_in = upper_external;
                     }
                     continue;
                 }
@@ -902,15 +882,10 @@ fn resolve_pipe_observable_insertions(
     temporal_templates: &crate::FxMap<super::TemplatePlan, crate::block::LoweringTemplateId>,
     template_pool: &LoweringTemplatePool,
     generators: &[StabilizerGenerator],
-) -> Result<Vec<ObservableChunkInsertion>, CompileError> {
+) -> Result<(Vec<ObservableChunkInsertion>, crate::FxSet<u32>), CompileError> {
     let mut insertions = Vec::new();
+    let mut reference_offsets = crate::FxSet::default();
     for (obs_index, stabilizer) in generators.iter().enumerate() {
-        // Mirror the block pass's ownership skip exactly, or a U6-owned
-        // generator's realignment operator dangles one-sidedly at the H seam
-        // (`ObservableSeamMismatch` — phase_gradient's rail).
-        if !statically_resolved(stabilizer, compiled) {
-            continue;
-        }
         let mut hadamard_edges = stabilizer
             .stabilizer
             .interior_edges
@@ -925,7 +900,10 @@ fn resolve_pipe_observable_insertions(
             .collect::<Vec<_>>();
         hadamard_edges.sort_by_key(|(pipe, _)| (pipe.src.to_array(), pipe.dst.to_array()));
 
+        let mut sign = false;
         for (pipe, pauli) in hadamard_edges {
+            // H Y H = -Y fixes the row's reference even without a pipe plan node.
+            sign ^= pauli == Pauli::Y;
             let Some(&plan_node) = plan.node_by_temporal_pipe().get(&pipe) else {
                 continue;
             };
@@ -978,8 +956,11 @@ fn resolve_pipe_observable_insertions(
                 ));
             }
         }
+        if matches!(stabilizer.kind, StabilizerRowKind::Logical) && sign {
+            reference_offsets.insert(obs_index as u32);
+        }
     }
-    Ok(insertions)
+    Ok((insertions, reference_offsets))
 }
 
 /// Route logical crossings through the spatial Hadamard walls a row touches.
@@ -1129,28 +1110,6 @@ pub(super) fn hadamard_temporal_pipe(
             hadamard: true,
         }
     })
-}
-
-/// Whether the pinned proxy can resolve this public row through static gateways.
-/// Selective-internal rows and deferred readout plans have no static observable;
-/// every selective in a retained row's support must already have a fixed template.
-fn statically_resolved(
-    stabilizer: &StabilizerGenerator,
-    compiled_blocks: &CompiledTemplateMap,
-) -> bool {
-    if !stabilizer.kind.is_readout() || stabilizer.readout_plan().is_some() {
-        return false;
-    }
-    !stabilizer
-        .stabilizer
-        .interior_nodes
-        .iter()
-        .any(|(pos, pauli)| {
-            *pauli != Pauli::I
-                && compiled_blocks
-                    .get(pos)
-                    .is_some_and(|compiled| compiled.template.is_selective())
-        })
 }
 
 /// One operator-only insertion carrying a block's boundary operators, with
@@ -1407,7 +1366,7 @@ fn incident_edge_pauli(
 
 #[cfg(test)]
 mod tests {
-    use bloq_graph::{Basis, BlockKind, CubeKind, PatchRotationKind, Pipe};
+    use bloq_graph::{Basis, BlockKind, CubeKind, PatchRotationKind, Pipe, Stabilizer};
     use glam::{ivec2, ivec3};
 
     use super::*;
@@ -1442,7 +1401,7 @@ mod tests {
         };
         let resolved = vec![insertion(0, 1), insertion(1, 0)];
 
-        let _materialized = materialize_observable_nodes(resolved, &[], &mut bloq, &node_map);
+        let _materialized = materialize_observable_nodes(resolved, 0, &mut bloq, &node_map);
 
         let records: Vec<_> = bloq
             .nodes()
@@ -1505,17 +1464,53 @@ mod tests {
     }
 
     #[test]
-    fn projection_observable_sign_tracks_y_temporal_hadamard_crossing() {
-        let lower = ivec3(0, 0, 0);
-        let upper = ivec3(0, 0, 1);
+    fn proxy_temporal_reference_offsets_preserve_y_parity() {
         let mut graph = BlockGraph::new();
-        graph.add_block(Block::new(lower, BlockKind::Cube(CubeKind::ZXZ)));
-        graph.add_block(Block::new(upper, BlockKind::Cube(CubeKind::ZXZ)));
-        graph.add_pipe(Pipe::new(lower, Direction::ZPLUS).with_hadamard());
-        let stabilizer = Stabilizer::from_interior_nodes([(lower, Pauli::Y), (upper, Pauli::Y)])
-            .with_interior_edges([((lower, upper), Pauli::Y)]);
-
-        assert!(temporal_hadamard_observable_sign(&graph, &stabilizer));
+        for z in 0..3 {
+            graph.add_block(Block::new(ivec3(0, 0, z), BlockKind::Cube(CubeKind::ZXZ)));
+        }
+        for z in 0..2 {
+            graph.add_pipe(Pipe::new(ivec3(0, 0, z), Direction::ZPLUS).with_hadamard());
+        }
+        for (paulis, expected) in [
+            (vec![Pauli::X], false),
+            (vec![Pauli::Z], false),
+            (vec![Pauli::Y], true),
+            (vec![Pauli::Y, Pauli::Y], false),
+            (vec![Pauli::Y, Pauli::X], true),
+        ] {
+            let stabilizer = Stabilizer::from_interior_nodes([]).with_interior_edges(
+                paulis.iter().enumerate().map(|(index, &pauli)| {
+                    (
+                        (ivec3(0, 0, index as i32), ivec3(0, 0, index as i32 + 1)),
+                        pauli,
+                    )
+                }),
+            );
+            let generators = [
+                StabilizerGenerator::new(stabilizer.clone(), StabilizerRowKind::Logical),
+                StabilizerGenerator::new(
+                    stabilizer,
+                    StabilizerRowKind::Measurement { name: "m".into() },
+                ),
+            ];
+            // Even an omitted pipe plan node retains the pinned row's reference.
+            let (insertions, offsets) = resolve_pipe_observable_insertions(
+                &graph,
+                &super::super::LowerPlan::default(),
+                &CompiledTemplateMap::default(),
+                &crate::FxMap::default(),
+                &LoweringTemplatePool::default(),
+                &generators,
+            )
+            .unwrap();
+            assert!(insertions.is_empty());
+            assert_eq!(offsets.contains(&0), expected, "{paulis:?}");
+            assert!(
+                !offsets.contains(&1),
+                "named outcomes retain their physical label"
+            );
+        }
     }
 
     #[test]
@@ -1572,9 +1567,13 @@ mod tests {
             },
         ];
 
-        let error = cancel_seam_operators_in_plan(&mut insertions, &plan, &graph, |_| {
-            Ok(glam::IVec2::ZERO)
-        })
+        let error = cancel_seam_operators_in_plan(
+            &mut insertions,
+            &plan,
+            &graph,
+            &Default::default(),
+            |_| Ok(glam::IVec2::ZERO),
+        )
         .unwrap_err();
 
         assert!(matches!(
@@ -1585,6 +1584,73 @@ mod tests {
                 upper: error_upper,
             } if error_lower == lower && error_upper == upper
         ));
+    }
+
+    #[test]
+    fn multiplex_seam_only_preserves_x_on_the_private_output() {
+        use super::super::plan::LinkedPlanInput;
+        use crate::port::PortExpansion;
+        use bloq_graph::{CubeHeight, PortRole};
+
+        let source = ivec3(0, 0, 0);
+        let private = ivec2(10, 0);
+        let mut graph = BlockGraph::new();
+        graph.add_block(Block::new(source, BlockKind::Cube(CubeKind::ZXZ)));
+        for role in [PortRole::Multiplex, PortRole::Input] {
+            let ports = crate::FxMap::from_iter([(
+                source,
+                PortExpansion {
+                    source,
+                    role,
+                    cube: Some((CubeKind::ZXZ, CubeHeight::default())),
+                    pipe_dir: Direction::ZPLUS,
+                    boundary_basis: Basis::Z,
+                    private_qubit: Some(private),
+                },
+            )]);
+            let input = LinkedPlanInput::from_module_graph(&graph, &ports, [source]);
+            let plan = super::super::LowerPlan::from_linked_input(&input);
+            for pauli in [Pauli::I, Pauli::X, Pauli::Y, Pauli::Z] {
+                let mut external = PauliMap::empty();
+                external.insert(private, pauli);
+                let mut output = external.clone();
+                output.insert(ivec2(0, 0), Pauli::Z);
+                let mut insertions = vec![
+                    ObservableChunkInsertion {
+                        site: ChunkSiteSource::SpatialPort(source),
+                        observable_index: 7,
+                        measurements: Vec::new(),
+                        operator_in: PauliMap::empty(),
+                        operator_out: output,
+                        provenance_in: FaceProvenance::Static,
+                        provenance_out: FaceProvenance::Static,
+                    },
+                    ObservableChunkInsertion {
+                        site: ChunkSiteSource::Block(source),
+                        observable_index: 7,
+                        measurements: Vec::new(),
+                        operator_in: PauliMap::from_unique_entries([(ivec2(0, 0), Pauli::Z)]),
+                        operator_out: PauliMap::empty(),
+                        provenance_in: FaceProvenance::Static,
+                        provenance_out: FaceProvenance::Static,
+                    },
+                ];
+                let result =
+                    cancel_seam_operators_in_plan(&mut insertions, &plan, &graph, &ports, |_| {
+                        Ok(glam::IVec2::ZERO)
+                    });
+                if role == PortRole::Multiplex && matches!(pauli, Pauli::Y | Pauli::Z) {
+                    assert!(
+                        matches!(result, Err(CompileError::ObservableSeamMismatch { .. })),
+                        "Multiplex private output {pauli:?} must be rejected"
+                    );
+                } else {
+                    result.unwrap();
+                    assert_eq!(insertions[0].operator_out, external);
+                    assert!(insertions[1].operator_in.is_empty());
+                }
+            }
+        }
     }
 
     #[test]
@@ -1794,8 +1860,8 @@ mod tests {
         let context = LocalSurfaceContext {
             graph: &graph,
             compiled: &compiled,
-            spatial_ports: &Default::default(),
-            spatial_templates: &Default::default(),
+            ports: &Default::default(),
+            port_templates: &Default::default(),
             wall_templates: &Default::default(),
             pipe_templates: &Default::default(),
             pool: &pool,

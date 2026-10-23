@@ -1,6 +1,8 @@
 use bloq_compile::{CompileConfig, CompileContext, validate_bloq_qubit_layout_for_source};
 use bloq_ir::{Bloq, LevelPath, MemoryRoundTarget};
-use bloq_stim::{emit_bloq_stim, emit_bloq_stim_with_stim_noise};
+use bloq_stim::{
+    BloqStimOptions, emit_bloq_stim, emit_bloq_stim_with, emit_bloq_stim_with_stim_noise,
+};
 use bloq_test::{
     CompileReadyCase, TestCaseError, TestFixture, compile_fixtures, select_test_cases_for_fixture,
 };
@@ -301,6 +303,35 @@ fn all_clifford_fixtures_d3() {
 }
 
 #[test]
+fn ghz_walks_emit_deterministic_aligned_stim() {
+    for distance in [3, 5] {
+        let ctx = make_context(distance);
+        for case in backend_integration_cases_for_fixture(TestFixture::GHZSlideThenGlide).unwrap() {
+            for program in [
+                ctx.compile(&case.graph).unwrap().bloq,
+                bloq_compile::compile_clifford_proxy(
+                    CompileConfig::new(distance),
+                    &case.graph,
+                    &[],
+                )
+                .unwrap()
+                .bloq,
+            ] {
+                let text =
+                    emit_bloq_stim_with(&program, &BloqStimOptions::new().with_align_moments(true))
+                        .unwrap();
+                let aligned: Circuit = text.parse().unwrap();
+                assert_eq!(
+                    aligned.num_observables() as usize,
+                    case.expected_observables().unwrap()
+                );
+                aligned.detector_error_model().unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "slow d5 Stim corpus distance sweep; run via just test-full"]
 fn all_clifford_fixtures_d5() {
     run_backend_fixtures(clifford_fixtures(), 5);
@@ -330,9 +361,9 @@ fn spatial_hadamard_undetectable_distance_d7() {
                 case.id(),
                 "cz[fill:0]"
                     | "cz[fill:1]"
-                    | "cz[fill:1][rotate:Y:2]"
-                    | "cz[fill:1][rotate:Z:1]"
-                    | "cz[fill:1][rotate:Z:3]"
+                    | "cz[fill:0][rotate:Y:2]"
+                    | "cz[fill:0][rotate:Z:1]"
+                    | "cz[fill:0][rotate:Z:3]"
                     | "spatial_hadamard[base]"
                     | "spatial_hadamard[base][rotate:Y:2]"
                     | "spatial_hadamard[base][rotate:Z:1]"

@@ -36,7 +36,9 @@ const SHOTS: usize = 6;
 // ==============================================================================
 
 fn compile_gallery(item: GalleryItem) -> Bloq {
-    bloq_compile::compile(&item.build(), 3)
+    CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true))
+        .compile(&item.build())
+        .map(|artifacts| artifacts.bloq)
         .unwrap_or_else(|e| panic!("{item:?}: failed to compile: {e:?}"))
 }
 
@@ -52,7 +54,9 @@ fn compile_closed_gallery(item: GalleryItem) -> Bloq {
     } else {
         graph
     };
-    bloq_compile::compile(&graph, 3)
+    CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true))
+        .compile(&graph)
+        .map(|artifacts| artifacts.bloq)
         .unwrap_or_else(|e| panic!("{item:?}: closed variant failed to compile: {e:?}"))
 }
 
@@ -78,7 +82,9 @@ fn assert_gallery_choi(item: GalleryItem, byproduct_varies: bool, both_arms: boo
     let arity = match item {
         GalleryItem::CNOT | GalleryItem::CZTemporalH => (2, 2),
         GalleryItem::BellState => (0, 2),
-        GalleryItem::GHZ | GalleryItem::GHZPatchRotations => (0, 4),
+        GalleryItem::GHZ | GalleryItem::GHZPatchRotations | GalleryItem::GHZSlideThenGlide => {
+            (0, 4)
+        }
         GalleryItem::ToffoliFromAndDelayedCZ => (3, 3),
         _ => (1, 1),
     };
@@ -111,12 +117,15 @@ fn assert_gallery_choi(item: GalleryItem, byproduct_varies: bool, both_arms: boo
                 sim.h(0);
                 sim.cx(0, 1)?;
             }
-            GalleryItem::GHZ | GalleryItem::GHZPatchRotations => {
+            GalleryItem::GHZ | GalleryItem::GHZPatchRotations | GalleryItem::GHZSlideThenGlide => {
                 sim.h(0);
                 for qubit in 1..4 {
                     sim.cx(0, qubit)?;
                 }
-                if item == GalleryItem::GHZPatchRotations {
+                if matches!(
+                    item,
+                    GalleryItem::GHZPatchRotations | GalleryItem::GHZSlideThenGlide
+                ) {
                     for qubit in 0..4 {
                         sim.h(qubit);
                     }
@@ -173,6 +182,11 @@ fn cnot_preserves_choi_state() {
 }
 
 #[test]
+fn ghz_slide_then_glide_preserves_choi_state() {
+    assert_gallery_choi(GalleryItem::GHZSlideThenGlide, true, false);
+}
+
+#[test]
 fn cz_temporal_h_preserves_choi_state() {
     assert_gallery_choi(GalleryItem::CZTemporalH, false, false);
 }
@@ -214,7 +228,10 @@ fn signed_structural_projections_preserve_s_phase() {
             },
         ]);
         graph.set_actions(actions).unwrap();
-        bloq_compile::compile(&graph, 3).unwrap()
+        CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true))
+            .compile(&graph)
+            .unwrap()
+            .bloq
     };
     for value in [false, true] {
         let bloq = compile(value);
@@ -287,7 +304,7 @@ fn toffoli_preserves_choi_state() {
 /// not vacuous.
 #[test]
 fn phase_gradient_k4_frame_stays_evaluable() {
-    let bloq = CompileContext::new(CompileConfig::default())
+    let bloq = CompileContext::new(CompileConfig::default().with_prepare_t_with_mpps(true))
         .compile(&GalleryItem::PhaseGradientK4.build())
         .expect("PhaseGradientK4 module compiles")
         .bloq;

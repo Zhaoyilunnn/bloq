@@ -28,13 +28,12 @@ fn correction_selection_does_not_narrow_the_integer_mask() {
 }
 
 #[test]
-fn qir_reuses_vm_validation_for_rus_isolation() {
+fn qir_rejects_unowned_rus_support() {
     let (mut program, options) = common::retry();
     let Instruction::Rus { owned_qubits, .. } = &mut program.tasks[0].instruction else {
         panic!("RUS fixture")
     };
     *owned_qubits = Box::new([]);
-    assert!(bloq_vm::runtime::validate_program(&program).is_err());
     assert!(matches!(
         emit_program_qir(&program, &options),
         Err(QirEmissionError::InvalidProgram(message)) if message.contains("isolated source")
@@ -245,4 +244,148 @@ fn measurements_share_aliases_and_multi_pauli_uses_one_scratch_qubit() {
             .count(),
         1
     );
+}
+
+// Input errors must be reported before starting external LLVM tools, including
+// operands in tasks that the entry stream does not execute.
+fn reject_before_llvm(program: &Program, options: &QirOptions) {
+    let mut options = options.clone();
+    options.optimizer = "/nonexistent/qir-validation-test-opt".into();
+    assert!(matches!(
+        emit_program_qir(program, &options),
+        Err(QirEmissionError::InvalidProgram(_))
+    ));
+}
+
+#[test]
+fn malformed_arena_and_register_references_are_rejected_before_llvm() {
+    let (base, options) = common::feedback();
+    let mut program = base.clone();
+    program.entry.tasks = Box::new([u32::MAX]);
+    reject_before_llvm(&program, &options);
+    for field in 0..4 {
+        let mut program = base.clone();
+        let mut task = program.tasks[0].clone();
+        match field {
+            0 => task.dependencies = Box::new([u32::MAX]),
+            1 => task.activation = Some(program.bit_count),
+            2 => task.output = Some(program.bit_count),
+            _ => task.qubits = Box::new([program.qubit_count]),
+        }
+        program.tasks.push(task); // deliberately unreachable
+        reject_before_llvm(&program, &options);
+    }
+    let mut bad_options = options.clone();
+    bad_options.output_records.push(base.record_count);
+    reject_before_llvm(&base, &bad_options);
+    let mut bad_options = options;
+    bad_options.output_bits.push(base.bit_count);
+    reject_before_llvm(&base, &bad_options);
+}
+
+#[test]
+fn rus_references_and_preparation_cannot_escape_isolation() {
+    for case in 0..5 {
+        let (mut program, options) = common::retry();
+        let extra_qubit = program.qubit_count;
+        program.qubit_count += 1;
+        let Instruction::Rus {
+            body,
+            owned_qubits,
+            retry_prepare,
+            cultivation_exits,
+            ..
+        } = &mut program.tasks[0].instruction
+        else {
+            panic!("RUS fixture")
+        };
+        match case {
+            0 => body.tasks = Box::new([u32::MAX]),
+            1 => owned_qubits.clone_from(&Box::<[u32]>::from([0, 0])),
+            2 => {
+                retry_prepare.moments = Box::new([Moment {
+                    operations: Box::new([QuantumOp::Reset {
+                        basis: Pauli::Z,
+                        qubit: extra_qubit,
+                    }]),
+                    ..Moment::default()
+                }])
+            }
+            3 => cultivation_exits.clone_from(&Box::<[u32]>::from([0])),
+            _ => body.tasks = Box::new([0]), // recursive RUS
+        }
+        reject_before_llvm(&program, &options);
+    }
+}
+
+#[test]
+fn invalid_quantum_operands_and_decoder_syndromes_are_rejected_before_llvm() {
+    let (base, options) = common::feedback();
+    for operation in [
+        QuantumOp::Reset {
+            basis: Pauli::Z,
+            qubit: base.qubit_count,
+        },
+        QuantumOp::Gate2 {
+            control_basis: Pauli::Z,
+            target_basis: Pauli::X,
+            control: 0,
+            target: 0,
+        },
+        QuantumOp::Measure {
+            observable: PauliProduct::default(),
+            records: Box::new([]),
+            flip_probability: 0.0,
+        },
+        QuantumOp::ConditionalPauli {
+            basis: Pauli::X,
+            qubit: 0,
+            control: base.record_count,
+        },
+    ] {
+        let mut program = base.clone();
+        let mut task = program.tasks[0].clone();
+        task.instruction = Instruction::MemoryRounds {
+            rounds: 1,
+            stream: QuantumStream {
+                moments: Box::new([Moment {
+                    operations: Box::new([operation]),
+                    ..Moment::default()
+                }]),
+            },
+            detectors: Box::new([]),
+        };
+        program.tasks.push(task);
+        reject_before_llvm(&program, &options);
+    }
+    let (program, mut options) = common::repetition(1);
+    options.decoders[0].syndrome[0].records = vec![program.record_count].into();
+    reject_before_llvm(&program, &options);
+}
+
+#[test]
+fn rus_checks_instruction_support_even_without_task_qubit_metadata() {
+    let (mut program, options) = common::retry();
+    let Instruction::Rus { body, .. } = &program.tasks[0].instruction else {
+        panic!("RUS fixture")
+    };
+    let member = body.tasks[0] as usize;
+    let outside = program.qubit_count;
+    program.qubit_count += 1;
+    program.tasks[member].qubits = Box::new([]);
+    program.tasks[member].instruction = common::quantum(vec![QuantumOp::Reset {
+        basis: Pauli::Z,
+        qubit: outside,
+    }]);
+    reject_before_llvm(&program, &options);
+}
+
+#[test]
+fn zero_probability_noise_remains_a_valid_noop() {
+    let (mut program, options) = common::feedback();
+    program.tasks[0].instruction = common::quantum(vec![QuantumOp::Depolarize1 {
+        probability: 0.0,
+        qubits: Box::new([0]),
+    }]);
+    emit_program_qir(&program, &options).expect("zero-probability noise is ignored");
 }

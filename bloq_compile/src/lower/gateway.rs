@@ -1,6 +1,6 @@
 //! Bind a local correlation surface to physical records and boundary operators.
 
-use bloq_graph::{BlockGraph, Pauli, StabilizerRowKind, SurfaceSupport};
+use bloq_graph::{BlockGraph, Direction, Pauli, StabilizerRowKind, SurfaceSupport};
 use bloq_ir::lowering::{InstanceBoundaryOperator, InstanceMeasurement, TemplateInstanceId};
 use bloq_ir::{BoundaryFace, TemporalPipeRef};
 use glam::IVec3;
@@ -11,7 +11,7 @@ use super::observable::{
 use super::{ChunkSiteSource, SelectiveArmInstances, SpatialPipeRef};
 use crate::block::{LocalStabilizer, LoweringTemplateId, LoweringTemplatePool, ObservableGateway};
 use crate::compile::{CompiledTemplateMap, TemplateRef};
-use crate::spatial_port::SpatialPortExpansionMap;
+use crate::port::PortExpansionMap;
 use crate::{BlockLayout, CompileError, xor_toggle};
 
 /// A distant T escape owns these records even when it is outside local geometry.
@@ -33,8 +33,8 @@ pub(crate) struct BoundDynamicAnchor<'a> {
 pub(crate) struct LocalSurfaceContext<'a> {
     pub graph: &'a BlockGraph,
     pub compiled: &'a CompiledTemplateMap,
-    pub spatial_ports: &'a SpatialPortExpansionMap,
-    pub spatial_templates: &'a CompiledTemplateMap,
+    pub ports: &'a PortExpansionMap,
+    pub port_templates: &'a CompiledTemplateMap,
     pub wall_templates: &'a crate::FxMap<SpatialPipeRef, LoweringTemplateId>,
     pub pipe_templates: &'a crate::FxMap<bloq_ir::TemporalPipeRef, LoweringTemplateId>,
     pub pool: &'a LoweringTemplatePool,
@@ -50,25 +50,43 @@ impl LocalSurfaceContext<'_> {
         position: IVec3,
         surface: &impl SurfaceSupport,
     ) -> bool {
+        // Any nonzero arm rules out an anchor, including arms that reconstruct
+        // an initially zero center. With no arms, only the source center remains.
+        if surface.node_pauli(position) == Pauli::I {
+            return false;
+        }
         let Some(compiled) = self.compiled.get(&position) else {
             return false;
         };
-        let flow = super::observable::build_local_flow_key(
-            self.graph,
-            position,
-            surface.node_pauli(position),
-            surface,
-            compiled.graph_connectivity,
-            self.spatial_ports
+        let connectivity = compiled.graph_connectivity;
+        if connectivity.is_isolated()
+            || (self
+                .ports
                 .get(&position)
-                .map(|port| port.cube_pipe_dir()),
-        );
-        super::observable::needs_dynamic_anchor(compiled.graph_connectivity, flow)
+                .is_some_and(|port| port.is_spatial())
+                && surface.port_pauli(position) != Pauli::I)
+        {
+            return false;
+        }
+        Direction::iter()
+            .filter(|&direction| connectivity.has_pipe(direction))
+            .all(|direction| {
+                let Some((source, target)) =
+                    super::observable::incident_edge_positions(self.graph, position, direction)
+                else {
+                    return true;
+                };
+                // Forward support takes precedence even for Some(I). A reverse
+                // Hadamard flip does not affect whether the arm is identity.
+                surface
+                    .edge_pauli(source, target)
+                    .or_else(|| surface.edge_pauli(target, source))
+                    .is_none_or(|pauli| pauli == Pauli::I)
+            })
     }
 
     /// Bounded geometry must supply an anchor when `needs_dynamic_anchor` is
     /// true. Without one, the fallback queries require a complete source graph.
-    #[hotpath::measure]
     pub(crate) fn resolve(
         &self,
         positions: &[IVec3],
@@ -109,7 +127,7 @@ impl LocalSurfaceContext<'_> {
             (position, if selected { when_true } else { when_false })
         });
         let mut insertions =
-            super::observable::resolve_observable_insertions_at_positions_with_spatial_ports(
+            super::observable::resolve_observable_insertions_at_positions_with_ports(
                 self.graph,
                 surface,
                 kind,
@@ -118,15 +136,15 @@ impl LocalSurfaceContext<'_> {
                 positions,
                 index,
                 true,
-                self.spatial_ports,
+                self.ports,
                 selected_template,
                 anchor,
             )?;
         insertions.extend(
             super::observable::resolve_spatial_port_observable_insertions(
                 surface,
-                self.spatial_ports,
-                self.spatial_templates,
+                self.ports,
+                self.port_templates,
                 self.pool,
                 positions,
                 index,
@@ -161,7 +179,10 @@ impl LocalSurfaceContext<'_> {
             index,
         )?;
         records.extend(pipe_records);
-        let sign = matches!(kind, StabilizerRowKind::Logical) && (wall_sign ^ pipe_sign);
+        let sign = matches!(kind, StabilizerRowKind::Logical)
+            && (wall_sign
+                ^ pipe_sign
+                ^ super::observable::port_transpose_sign(surface, self.ports, Some(positions)));
         Ok((crate::xor_toggled_sorted(records), includes, sign))
     }
 }
@@ -316,5 +337,93 @@ fn insertion_offset(
         // The wall template uses its negative-axis endpoint's coordinates.
         ChunkSiteSource::SpatialPipe(pipe) => layout.offset(pipe.src),
         ChunkSiteSource::SpatialPort(port) => layout.offset(port),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::CompiledTemplateInfo;
+    use crate::port::PortExpansion;
+    use crate::signature::Connectivity;
+    use bloq_graph::{Block, BlockKind, CubeKind, PortRole, Stabilizer};
+
+    #[test]
+    fn dynamic_anchors_require_nonzero_centers_without_incident_support() {
+        let center = IVec3::ZERO;
+        for height in [1, 2] {
+            let neighbor = height * IVec3::Z;
+            let mut graph = BlockGraph::new();
+            graph.add_block(
+                Block::new(center, BlockKind::Cube(CubeKind::ZXZ))
+                    .with_height(format!("{height}d").parse().unwrap())
+                    .unwrap(),
+            );
+            graph.add_block(Block::new(neighbor, BlockKind::Cube(CubeKind::ZXZ)));
+            for connectivity in [
+                Connectivity::ISOLATED,
+                Connectivity::ISOLATED.with_pipe(Direction::ZPLUS),
+                Connectivity::ISOLATED.with_hadamard(Direction::ZPLUS),
+            ] {
+                let compiled = CompiledTemplateMap::from_iter([(
+                    center,
+                    CompiledTemplateInfo {
+                        graph_connectivity: connectivity,
+                        template: TemplateRef::Fixed(LoweringTemplateId(0)),
+                    },
+                )]);
+                for (pauli, forward, reverse, spatial, expected) in [
+                    (Pauli::I, None, None, false, false),
+                    (Pauli::Z, None, None, false, true),
+                    (Pauli::Z, Some(Pauli::X), None, false, false),
+                    (Pauli::Z, None, Some(Pauli::Y), false, false),
+                    (Pauli::Z, None, Some(Pauli::I), false, true),
+                    (Pauli::Z, Some(Pauli::I), Some(Pauli::X), false, true),
+                    (Pauli::Z, None, None, true, false),
+                ] {
+                    let ports = if spatial {
+                        PortExpansionMap::from_iter([(
+                            center,
+                            PortExpansion {
+                                source: center,
+                                role: PortRole::Output,
+                                cube: Some((CubeKind::ZXZ, Default::default())),
+                                pipe_dir: Direction::ZMINUS,
+                                boundary_basis: CubeKind::ZXZ.y(),
+                                private_qubit: None,
+                            },
+                        )])
+                    } else {
+                        PortExpansionMap::default()
+                    };
+                    let context = LocalSurfaceContext {
+                        graph: &graph,
+                        compiled: &compiled,
+                        ports: &ports,
+                        port_templates: &Default::default(),
+                        wall_templates: &Default::default(),
+                        pipe_templates: &Default::default(),
+                        pool: &LoweringTemplatePool::default(),
+                        instances: &Default::default(),
+                        selectives: &Default::default(),
+                        layout: BlockLayout::new(3),
+                    };
+                    let mut surface = Stabilizer::from_interior_nodes([(center, pauli)]);
+                    surface.port_stabilizer.insert(center, Pauli::Y);
+                    for (edge, support) in
+                        [((center, neighbor), forward), ((neighbor, center), reverse)]
+                    {
+                        if let Some(support) = support {
+                            surface.interior_edges.insert(edge, support);
+                        }
+                    }
+                    assert_eq!(
+                        context.needs_dynamic_anchor(center, &surface),
+                        expected && !connectivity.is_isolated()
+                    );
+                    assert!(!context.needs_dynamic_anchor(IVec3::X, &surface));
+                }
+            }
+        }
     }
 }

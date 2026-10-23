@@ -17,7 +17,7 @@ use bloq_ir::{
     RegionNode, SubGraph, TemporalPipeRef, ValueRef,
 };
 use glam::{IVec2, IVec3};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::instruction::*;
 
@@ -340,23 +340,48 @@ fn materialize_terminal_holds(
         .into_iter()
         .map(|frame| (frame.port, [frame.x, frame.z]))
         .collect::<FxHashMap<_, _>>();
+    let mut owners = FxHashMap::default();
+    let mut bindings: FxHashMap<_, Vec<ScopedNode>> = FxHashMap::default();
+    for (path, level) in bloq.levels() {
+        for (node, data) in level.nodes() {
+            if let Some(quantum) = data.try_quantum() {
+                for instance in &quantum.instances {
+                    let private = matches!(
+                        instance.provenance,
+                        bloq_ir::InstanceProvenance::IdealPortAdapter { .. }
+                            | bloq_ir::InstanceProvenance::SpatialPortSubstitution {
+                                role: bloq_ir::PortRole::Multiplex,
+                                ..
+                            }
+                    );
+                    owners.insert(instance.id, (path.clone(), node, private));
+                }
+            } else if let Some(classical) = data.try_classical() {
+                for operator in classical.operators() {
+                    if operator.face == BoundaryFace::Output {
+                        let nodes = bindings.entry(operator.instance).or_default();
+                        if nodes.last().is_none_or(|(previous_path, previous)| {
+                            previous_path != &path || *previous != node
+                        }) {
+                            nodes.push((path.clone(), node));
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut targets = Vec::new();
+    let mut seen = FxHashSet::default();
     for output in bloq.logical_outputs() {
-        let owner = bloq.levels().find_map(|(path, level)| {
-            level.quantum_nodes().find_map(|(node, quantum)| {
-                quantum
-                    .instances
-                    .iter()
-                    .any(|instance| instance.id == output.instance)
-                    .then(|| (path.clone(), node))
-            })
-        });
-        let Some((path, owner)) = owner else {
+        let Some((path, owner, private)) = owners.get(&output.instance) else {
             return Err(LowerError::MissingOutputInstance(output.instance.0));
         };
-        if targets.iter().any(|(existing_path, existing, _, _, _, _)| {
-            *existing_path == path && *existing == owner
-        }) {
+        // Private ideal outputs never occupy a surface-code memory patch.
+        if *private {
+            continue;
+        }
+        let (path, owner) = (path.clone(), *owner);
+        if !seen.insert((path.clone(), owner)) {
             continue;
         }
         let level = bloq
@@ -382,30 +407,12 @@ fn materialize_terminal_holds(
             .get(&output.port)
             .copied()
             .ok_or(LowerError::MissingOutputFrame(output.port.to_array()))?;
-        let bindings = bloq
-            .levels()
-            .flat_map(|(binding_path, level)| {
-                level
-                    .nodes()
-                    .filter_map(move |(node, data)| match data.try_classical() {
-                        Some(classical)
-                            if classical.operators().iter().any(|operator| {
-                                operator.face == BoundaryFace::Output
-                                    && operator.instance == output.instance
-                            }) =>
-                        {
-                            Some((binding_path.clone(), node))
-                        }
-                        _ => None,
-                    })
-            })
-            .collect::<Vec<_>>();
         targets.push((
             path,
             owner,
             from,
             frame_nodes,
-            bindings,
+            bindings.remove(&output.instance).unwrap_or_default(),
             pipe_origin(edge.pipes.iter().map(|pipe| pipe.pipe)),
         ));
     }
@@ -739,7 +746,7 @@ impl LowerCx<'_, '_> {
                 .expect_quantum()
                 .instances
                 .iter()
-                .filter(|instance| instance.provenance.is_spatial_port_substitution())
+                .filter(|instance| instance.provenance.is_ideal_boundary())
                 .flat_map(|instance| {
                     self.bloq.templates()[instance.template_id]
                         .qubits()
@@ -924,9 +931,17 @@ impl LowerCx<'_, '_> {
                         Ok(product)
                     })
                     .collect::<Result<Vec<_>, LowerError>>()?;
+                let x = self.pauli_product(&input.x, IVec2::ZERO)?;
+                let z = self.pauli_product(&input.z, IVec2::ZERO)?;
                 let data_qubits = stabilizers
                     .iter()
                     .flat_map(|stabilizer| stabilizer.terms.iter().map(|(qubit, _)| *qubit))
+                    .chain(
+                        x.terms
+                            .iter()
+                            .chain(z.terms.iter())
+                            .map(|(qubit, _)| *qubit),
+                    )
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect::<Vec<_>>()
@@ -936,8 +951,8 @@ impl LowerCx<'_, '_> {
                     task,
                     data_qubits,
                     stabilizers: stabilizers.into_boxed_slice(),
-                    x: self.pauli_product(&input.x, IVec2::ZERO)?,
-                    z: self.pauli_product(&input.z, IVec2::ZERO)?,
+                    x,
+                    z,
                 })
             })
             .collect()
@@ -1512,13 +1527,15 @@ impl LowerCx<'_, '_> {
                 })
             })
         });
-        let source = top_level_source.then_some(if owns_input {
-            SourceRole::LogicalInput
-        } else if prepares_y {
-            SourceRole::PreparedY
+        let source = if owns_input {
+            Some(SourceRole::LogicalInput)
         } else {
-            SourceRole::Clifford
-        });
+            top_level_source.then_some(if prepares_y {
+                SourceRole::PreparedY
+            } else {
+                SourceRole::Clifford
+            })
+        };
         let mut origin = self.quantum_origin(node, source);
         if matches!(node.provenance, NodeProvenance::MemoryPadding { .. }) {
             let pipes = level
@@ -1546,7 +1563,7 @@ impl LowerCx<'_, '_> {
             .iter()
             .flat_map(|alternative| alternative.stream.moments.iter())
             .flat_map(|moment| moment.operations.iter())
-            .flat_map(op_qubits)
+            .flat_map(QuantumOp::qubits)
             .collect::<BTreeSet<_>>();
         for qubit in &qubits {
             if let Some(previous) = last_qubit.get(qubit) {
@@ -2674,28 +2691,6 @@ fn gate1(gate: GateType, qubit: QubitId) -> Option<QuantumOp> {
     })
 }
 
-fn op_qubits(op: &QuantumOp) -> Box<dyn Iterator<Item = QubitId> + '_> {
-    match op {
-        QuantumOp::Gate1 { qubit, .. }
-        | QuantumOp::Pauli { qubit, .. }
-        | QuantumOp::T { qubit, .. }
-        | QuantumOp::Reset { qubit, .. }
-        | QuantumOp::ConditionalPauli { qubit, .. } => Box::new(std::iter::once(*qubit)),
-        QuantumOp::Gate2 {
-            control, target, ..
-        } => Box::new([*control, *target].into_iter()),
-        QuantumOp::Measure { observable, .. } => {
-            Box::new(observable.terms.iter().map(|(qubit, _)| *qubit))
-        }
-        QuantumOp::Depolarize1 { qubits, .. } | QuantumOp::PauliError { qubits, .. } => {
-            Box::new(qubits.iter().copied())
-        }
-        QuantumOp::Depolarize2 { pairs, .. } => {
-            Box::new(pairs.iter().flat_map(|&(left, right)| [left, right]))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -3168,7 +3163,8 @@ mod tests {
 
     #[test]
     fn thth_sources_and_live_output_hold_have_causal_metadata() {
-        let bloq = CompileContext::new(CompileConfig::new(3))
+        // Full cultivation is required to inspect the factory body and decoder GAP.
+        let bloq = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(false))
             .compile(&GalleryItem::THTH.build())
             .unwrap()
             .bloq;
@@ -3386,7 +3382,8 @@ mod tests {
 
     #[test]
     fn zero_latency_factory_keeps_the_reusable_gap_frontier() {
-        let bloq = CompileContext::new(CompileConfig::new(3))
+        // This test verifies the full factory's post-cultivation GAP frontier.
+        let bloq = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(false))
             .compile(&GalleryItem::T.build())
             .unwrap()
             .bloq;
@@ -3422,7 +3419,7 @@ mod tests {
 
     #[test]
     fn postmerge_noise_does_not_add_vm_time() {
-        let bloq = CompileContext::new(CompileConfig::new(3))
+        let bloq = CompileContext::new(CompileConfig::new(3).with_prepare_t_with_mpps(true))
             .compile(&GalleryItem::T.build())
             .unwrap()
             .bloq;

@@ -6,7 +6,7 @@ rust:
     - 'rust-toolchain.toml'
     - '.cargo/**'
     - 'justfile'
-    - '.github/workflows/ci.yml'
+    - '.github/workflows/{ci,site-build,package-build}.yml'
     - '.github/ci-paths.yml'
     - '**/Cargo.toml'
     - '**/build.rs'
@@ -18,14 +18,16 @@ rust:
   - 'bloq*/assets/**'
   - 'bloq_editor/desktop/**'
   - 'THIRD-PARTY-NOTICES.txt'
-  - 'tools/{release_build,test_release_build}.py'
+  - 'tools/{release_build,test_release_build,check_ci}.py'
   - 'tools/third_party_licenses.{py,json}'
   - 'xtask/**'
   - 'docs/fixtures/**'
-  # These Markdown files are embedded in Rust API documentation/doctests.
+  - '!bloq_py/tests/**'
+
+# Embedded by the facade only for doctests, not native/editor builds.
+doctests:
   - 'README.md'
   - 'docs/{guide,releasing}.md'
-  - '!bloq_py/tests/**'
 
 python:
   - *cargo
@@ -40,7 +42,7 @@ python:
   - '!bloq_editor/assets/**'
   - '!bloq_test/**'
 
-web:
+site:
   - *cargo
   - 'bloq*/src/**'
   - 'bloq_graph/assets/**'
@@ -50,3 +52,26 @@ web:
   - '!bloq_cli/**'
   - '!bloq_test/**'
   - '!bloq/**'
+  - 'docs/**'
+  - 'tools/{site,test_site}.py'
+  - '.github/workflows/website.yml'
+  - 'CONTRIBUTING.md'
+
+# Installed distributions exercise packaging and platforms beyond the dev build.
+packages:
+  - *cargo
+  - 'LICENSE'
+  - 'THIRD-PARTY-NOTICES.txt'
+  - 'README.md'
+  - 'bloq*/src/**'
+  - 'bloq*/LICENSE'
+  - 'bloq*/README.md'
+  - 'bloq_graph/assets/**'
+  - 'bloq_py/python/**'
+  - 'bloq_py/pyproject.toml'
+  - 'bloq_py/THIRD-PARTY-NOTICES.txt'
+  - 'bloq_py/uv.lock'
+  - 'tools/{release_build,check_installed_package}.py'
+  - '.github/workflows/pypi.yml'
+  - '!bloq_editor/**'
+  - '!bloq_test/**'

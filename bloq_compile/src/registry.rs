@@ -16,7 +16,10 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use bloq_graph::{BlockGraph, GuardedSurfaceSpace, GuardedTopology, MaterializedModuleSite};
+use bloq_graph::{
+    BlockGraph, GuardedSurfaceSpace, GuardedTopology, MaterializedModuleSite,
+    PreparedModuleRelations,
+};
 use bloq_ir::lowering::{InstanceMeasurement, TemplateInstanceId};
 use bloq_ir::{
     Bloq, BloqEdge, BloqNode, BloqNodeId, BloqNodeKind, ClassicalNode, InstanceProvenance,
@@ -32,19 +35,6 @@ fn assembly(reason: impl Into<String>) -> CompileError {
     }
 }
 
-fn needs_local_variants(graph: &BlockGraph) -> bool {
-    graph.has_continuing_branches()
-        || graph
-            .blocks()
-            .chain(
-                graph
-                    .branch_definitions()
-                    .iter()
-                    .flat_map(|region| region.on_false().blocks().chain(region.on_true().blocks())),
-            )
-            .any(|block| block.kind().is_selective())
-}
-
 fn hierarchy_needs_local_variants(program: &BlockGraph) -> bool {
     let mut pending = vec![program.root()];
     let mut seen = BTreeSet::new();
@@ -52,7 +42,7 @@ fn hierarchy_needs_local_variants(program: &BlockGraph) -> bool {
         if !seen.insert(&module.name) {
             continue;
         }
-        if needs_local_variants(module.local_body()) {
+        if module.local_body().has_continuing_branches() {
             return true;
         }
         pending.extend(module.instances.iter().map(|instance| {
@@ -64,6 +54,23 @@ fn hierarchy_needs_local_variants(program: &BlockGraph) -> bool {
     false
 }
 
+#[cfg(test)]
+pub(super) fn compile_hierarchy_without_inventory(
+    context: &CompileContext,
+    program: &BlockGraph,
+) -> Result<CompileArtifacts, CompileError> {
+    let summary = context.prepare_relations(program, bloq_graph::default_module_jobs())?;
+    let linked = summary.linked();
+    compile_native(
+        context,
+        &linked.graph,
+        &linked.sites,
+        &[],
+        Some(&summary),
+        bloq_graph::default_module_jobs(),
+    )
+}
+
 pub(super) fn compile_graph(
     context: &CompileContext,
     graph: &BlockGraph,
@@ -73,6 +80,7 @@ pub(super) fn compile_graph(
         graph,
         &Default::default(),
         &[],
+        None,
         bloq_graph::default_module_jobs(),
     )
 }
@@ -82,85 +90,34 @@ pub(super) fn compile_hierarchy(
     program: &BlockGraph,
     jobs: NonZeroUsize,
 ) -> Result<CompileArtifacts, CompileError> {
-    if !hierarchy_needs_local_variants(program) {
-        let (linked, definitions) = context.prepare_module_definitions(program, jobs)?;
-        return compile_native(context, &linked.graph, &linked.sites, &definitions, jobs);
-    }
-    // C0 remains a definition contract, including definitions whose parent
-    // later consumes all their public outputs.
-    let limits = context.config.certification_limits();
-    let mut pending = vec![program.root()];
-    let mut seen = BTreeSet::new();
-    while let Some(module) = pending.pop() {
-        if !seen.insert(module.name.clone()) {
-            continue;
-        }
-        pending.extend(module.instances.iter().map(|instance| {
-            program
-                .module(&instance.definition)
-                .expect("validated definition")
-        }));
-        if module.name == program.root().name {
-            continue;
-        }
-        let linked = bloq_graph::flatten_module_definition(program, module, "")?;
-        certify_definition(
-            &module.name,
-            &linked.graph.fix_shadowed_faces(),
-            &linked.sites,
-            limits,
-        )?;
-    }
-    let linked = bloq_graph::flatten_module_definition(program, program.root(), "")?;
-    compile_native(context, &linked.graph, &linked.sites, &[], jobs)
+    let summary = context.prepare_relations(program, jobs)?;
+    let definitions = if hierarchy_needs_local_variants(program) {
+        Vec::new()
+    } else {
+        context.prepare_module_definitions(program, &summary, jobs)?
+    };
+    let linked = summary.linked();
+    compile_native(
+        context,
+        &linked.graph,
+        &linked.sites,
+        &definitions,
+        Some(&summary),
+        jobs,
+    )
 }
 
-#[hotpath::measure]
-pub(super) fn certify_definition(
-    name: &str,
-    graph: &BlockGraph,
-    sites: &std::collections::HashMap<IVec3, MaterializedModuleSite>,
-    limits: bloq_graph::ModuleCertificationLimits,
-) -> Result<(), CompileError> {
-    GuardedTopology::new(graph, limits)
-        .and_then(|topology| GuardedSurfaceSpace::new(topology, sites, limits))
-        .and_then(|space| space.plan_readouts().map(drop))
-        .map_err(|source| match source {
-            bloq_graph::BlockGraphError::Stabilizer(
-                bloq_graph::StabilizerError::ResourceLimited {
-                    phase,
-                    observed,
-                    limit,
-                },
-            ) => bloq_graph::ModuleCertificationError::ResourceLimited {
-                module: name.to_owned(),
-                phase,
-                observed,
-                limit,
-            }
-            .into(),
-            source => bloq_graph::ModuleCertificationError::Graph {
-                module: name.to_owned(),
-                source,
-            }
-            .into(),
-        })
-}
-
-#[hotpath::measure]
 fn compile_native(
     context: &CompileContext,
     source: &BlockGraph,
     source_sites: &std::collections::HashMap<IVec3, MaterializedModuleSite>,
     definitions: &[Arc<super::PreparedDefinitionObject>],
+    summary: Option<&PreparedModuleRelations>,
     jobs: NonZeroUsize,
 ) -> Result<CompileArtifacts, CompileError> {
     use bloq_utils::boolean::DECISION_TRUE;
     let started = web_time::Instant::now();
     context.report_progress(super::CompileStage::Validation)?;
-    if context.clifford_proxy.is_some() {
-        return Err(CompileError::StructuralBranchCliffordProxyUnsupported);
-    }
     let limits = context.config.certification_limits();
     let distance = context.config.code_distance();
     source.validate_resource_limits(limits)?;
@@ -180,18 +137,15 @@ fn compile_native(
             })
             .collect::<Result<_, CompileError>>()?;
         context.report_progress(super::CompileStage::Correlations)?;
-        let topology =
-            hotpath::measure_block!("native.topology", GuardedTopology::new(&graph, limits))?;
-        let relation = hotpath::measure_block!(
-            "native.compose_surfaces",
-            GuardedSurfaceSpace::new(topology, &sites, limits)
-        )?;
-        let mut readout_plan =
-            hotpath::measure_block!("native.plan_readouts", relation.plan_readouts())?;
+        let topology = GuardedTopology::new(&graph, limits)?;
+        let relation = match summary {
+            Some(summary) => summary.compose(topology, &sites)?,
+            None => GuardedSurfaceSpace::new(topology, &sites, limits)?,
+        };
+        let mut readout_plan = relation.plan_readouts()?;
         context.report_progress(super::CompileStage::Placement)?;
-        let mut family = hotpath::measure_block!("native.physical_plan", {
-            physical::ScheduledFamily::new(&mut readout_plan.topology, distance, limits)
-        })?;
+        let mut family =
+            physical::ScheduledFamily::new(&mut readout_plan.topology, context.config)?;
         let mut assembly = assembly::Assembly::new();
         let mut imported = Vec::new();
         // Physical template compilation follows the existing worker budget. Signed
@@ -230,8 +184,8 @@ fn compile_native(
             )?);
         }
         drop((imported, selectors));
+        assembly.group_walking_choreography(&mut readout_plan.topology)?;
         let mut boolean = assembly.build(&mut readout_plan.topology)?;
-        assembly.order_walking_choreography(&mut readout_plan.topology)?;
         assembly.compose_flows(
             &mut readout_plan.topology,
             &mut boolean,
@@ -246,7 +200,7 @@ fn compile_native(
             &mut boolean,
             distance,
             &mut family.anchors,
-            limits.max_witness_nodes,
+            context,
         )?;
         let interface = {
             // A local projection includes neighboring lookup/emission context.
@@ -276,7 +230,12 @@ fn compile_native(
                 .blocks()
                 .filter(|block| block.kind().is_port())
             {
-                let source = if family.reference.spatial_ports.contains_key(&port.pos()) {
+                let source = if family
+                    .reference
+                    .ports
+                    .get(&port.pos())
+                    .is_some_and(|port| port.is_spatial())
+                {
                     crate::lower::ChunkSiteSource::SpatialPort(port.pos())
                 } else {
                     crate::lower::ChunkSiteSource::Block(port.pos())
@@ -293,7 +252,7 @@ fn compile_native(
                 &assembly.bloq,
                 &family.reference.graph,
                 &instances,
-                &family.reference.spatial_ports,
+                &family.reference.ports,
                 distance,
             )
         };
@@ -318,16 +277,10 @@ fn finish_native(
     context.report_progress(super::CompileStage::Optimization)?;
     let limits = context.config.certification_limits();
     let distance = context.config.code_distance();
-    hotpath::measure_block!(
-        "native.finalize",
-        crate::lower::finish_program(&mut bloq, interface)
-    )?;
+    crate::lower::finish_program(&mut bloq, interface)?;
     bloq.insert_metadata(super::CODE_DISTANCE_METADATA_KEY, distance);
     bloq.insert_metadata(super::CONVENTION_METADATA_KEY, "fixed-bulk".to_owned());
-    hotpath::measure_block!(
-        "native.validate_layout",
-        crate::lower::validate_bloq_qubit_layout_with_limits(&bloq, graph, limits.boolean_limits())
-    )?;
+    crate::lower::validate_bloq_qubit_layout_with_limits(&bloq, graph, limits.boolean_limits())?;
     Ok(CompileArtifacts {
         bloq,
         warnings,

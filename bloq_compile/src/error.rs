@@ -103,6 +103,12 @@ pub enum CompileError {
         /// Multiplex port position.
         port: IVec3,
     },
+    /// No unused coordinate is available for an ideal Bell boundary adapter.
+    #[error("cannot allocate a private physical qubit for ideal Port boundary at {port:?}")]
+    PrivatePortCoordinateUnavailable {
+        /// Port position.
+        port: IVec3,
+    },
     /// A spatial Hadamard wall endpoint is not a cube.
     #[error(
         "spatial Hadamard pipe endpoint {pos:?} is not a cube; the wall's extended stabilizers \
@@ -157,6 +163,30 @@ pub enum CompileError {
         second: bloq_ir::BloqNodeId,
         /// Shared physical coordinate.
         qubit: IVec2,
+    },
+    /// A dependency forces another node to reuse a qubit while a temporal
+    /// seam still carries its state to an unexecuted consumer.
+    #[error(
+        "WF-LAYOUT: node {reuser:?} reuses live qubit {qubit:?} after producer {producer:?} but before its required consumer {consumer:?}; the required execution order cannot preserve the pending quantum state"
+    )]
+    LiveQubitReuse {
+        /// Node that has already produced the live state.
+        producer: bloq_ir::BloqNodeId,
+        /// Node still requiring that state.
+        consumer: bloq_ir::BloqNodeId,
+        /// Intervening node using the same physical coordinate.
+        reuser: bloq_ir::BloqNodeId,
+        /// Shared physical coordinate.
+        qubit: IVec2,
+    },
+    /// A reused region footprint needs a boundary summary whose body membership
+    /// cannot be expressed in the containing graph's Boolean domain.
+    #[error(
+        "WF-LAYOUT: cannot prove live-qubit reuse around region {node:?} with conditional body membership"
+    )]
+    ConditionalRegionLivenessUnsupported {
+        /// Region requiring the unavailable boundary summary.
+        node: bloq_ir::BloqNodeId,
     },
     /// Patch-rotation circuit construction failed.
     #[error("PatchRotation block construction failed: {reason}")]
@@ -266,9 +296,6 @@ pub enum CompileError {
     /// Runtime stabilizer-basis construction failed.
     #[error("{0}")]
     RuntimeBasis(#[from] bloq_graph::RuntimeBasisError),
-    /// Symbolic stabilizer-basis construction failed.
-    #[error("{0}")]
-    SymbolicBasis(#[from] bloq_graph::SymbolicBasisError),
     /// Logical output-correction construction failed.
     #[error("{0}")]
     OutputCorrection(#[from] bloq_graph::OutputCorrectionError),

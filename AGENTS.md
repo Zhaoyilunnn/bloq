@@ -1,0 +1,65 @@
+# Bloq Agent Instructions
+
+This file records repository-specific constraints that are easy to miss from
+the code alone. Use [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md),
+and `just --list` for orientation, setup, and routine checks.
+
+## Source of Truth and Architecture Changes
+
+Use the workspace crates, their tests, `docs/`, and `README.md` as the source
+of truth. Inspect the current implementation and tests before resolving
+architectural ambiguity.
+
+If a proposed change contradicts an architectural invariant or the current
+architecture cannot support it:
+
+1. Stop instead of implementing a workaround or rewriting architecture-facing
+   documentation to justify the change.
+2. Explain the discrepancy and propose an explicit architectural change.
+3. Wait for human confirmation before implementation.
+
+## Source and Test Rules
+
+- For `bloq_editor` changes, check both desktop and web targets.
+- Generate Python stubs from Rust annotations with `just py-stub`; never edit
+  generated stubs by hand.
+- New gallery entries need an expected QuiZX map in
+  `bloq_graph/tests/verify_gallery.rs` and a shared fixture in `bloq_test`.
+  Keep physical and Stim coverage driven by that corpus.
+- Use QuiZX for graph-level logical checks. Non-Clifford physical execution
+  checks belong in `bloq_vm/tests`.
+- Use ideal T-source proxies (`with_prepare_t_with_mpps(true)` in Rust,
+  `prepare_t_with_mpps=True` in Python) for VM execution tests. Retain full
+  circuits when testing cultivation or the native factory retry protocol.
+- Test observable behavior rather than private layout. Follow the verification
+  commands in [CONTRIBUTING.md](CONTRIBUTING.md#verification); prose-only edits
+  need a diff and link review, while changed Rust API examples need doctests.
+
+## Contributions
+
+- Never commit directly to `main`; use a feature branch named with a
+  Conventional Commit type, such as `docs/update-guide`, `feat/add-backend`,
+  or `fix/readout-order`.
+- Coordinate breaking API changes across callers, examples, documentation,
+  and release notes. Preserve released documentation and API references.
+- Do not edit `CHANGELOG.md` manually. Release-plz generates it in release PRs.
+  Record release-note details in Conventional Commit messages and compatibility
+  changes in `BREAKING CHANGE:` footers.
+- Use Conventional Commit scopes in commit messages and squash-merge titles:
+  `python` for Python API, `rust` for Rust API and compiler, `editor`, `cli`,
+  `ci` for workflows and packaging, `docs` for documentation, and `deps` for
+  dependency updates. Choose the affected area even when only shared files
+  change, such as `fix(editor): ...` for a root dependency update that fixes
+  the editor. Other unscoped changes remain under General; unscoped `docs` and
+  `ci` commits use their corresponding areas. See
+  [Contributing](CONTRIBUTING.md) and [changelog generation](docs/releasing.md#changelog).
+- Use Conventional Commits. Follow the repository's
+  [AI contribution policy](CONTRIBUTING.md#ai-assisted-contributions), including
+  tool/model disclosure and an `Assisted-by: <tool> (<model>)` commit trailer.
+  [Retrieve exact model identifiers](CONTRIBUTING.md#model-identifier-retrieval)
+  from runtime metadata before committing or publishing. If unresolved, report
+  the blocker first; never guess or publish an "unavailable" fallback.
+  Keep the human contributor as author; do not use AI `Co-authored-by:` credit.
+- Keep the aggregate `CI` check required. Release publication and stable website
+  promotion are separate maintainer actions; follow [Releasing](docs/releasing.md) and
+  [Website maintenance](docs/site-maintenance.md).

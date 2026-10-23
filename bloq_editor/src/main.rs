@@ -54,7 +54,6 @@ use plugins::BloqEditorPlugin;
 // 3D labels reuse the Zed Mono subset; non-ASCII labels have no glyph.
 const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/fonts/ZedMono-Regular.ttf");
 
-#[cfg_attr(not(target_arch = "wasm32"), hotpath::main)]
 fn main() {
     // The same WASM module also runs inside the compilation Worker.
     #[cfg(target_arch = "wasm32")]
@@ -153,13 +152,10 @@ fn main() {
         });
         let graph = graph.fix_shadowed_faces();
         if let Some(indices) = request.stabilizer {
-            let generators = graph
-                .stabilizers()
-                .unwrap_or_else(|error| {
-                    eprintln!("failed to derive correlation surfaces: {error}");
-                    std::process::exit(2);
-                })
-                .generators;
+            let generators = graph.stabilizers().unwrap_or_else(|error| {
+                eprintln!("failed to derive correlation surfaces: {error}");
+                std::process::exit(2);
+            });
             if indices.iter().any(|&index| index >= generators.len()) {
                 eprintln!(
                     "stabilizer indices {indices:?} out of range ({} generators)",

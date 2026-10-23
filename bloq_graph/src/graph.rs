@@ -21,13 +21,10 @@ use crate::gltf::{
     module_html_geometry, stabilizer_as_gltf_data,
 };
 use crate::validate::InvalidActionError;
-use crate::zx::{
-    Stabilizer, StabilizerGenerator, StabilizerGenerators, StabilizerRowKind,
-    fill_ports_auto as fill_ports_auto_impl,
-};
+use crate::zx::{StabilizerGenerator, fill_ports_auto as fill_ports_auto_impl};
 use crate::{
-    Action, ActionDag, Block, BlockGraphError, BlockKind, BranchProjection, CubeHeight, CubeKind,
-    Direction, MeasureTarget, MeasurementObservable, PatchRotationKind, Pipe, WalkingBoundaryKind,
+    Action, ActionDag, Block, BlockGraphError, BlockKind, CubeHeight, CubeKind, Direction,
+    MeasureTarget, MeasurementObservable, PatchRotationKind, Pipe, WalkingBoundaryKind,
     WalkingKind,
 };
 
@@ -62,10 +59,6 @@ pub struct BlockLayerView<'a> {
     graph: &'a BlockGraph,
     z: i32,
 }
-
-/// Stabilizer tables for the jointly reachable static projections of a
-/// conditional block graph.
-pub type AnalyzedBranchProjections = Vec<(BranchProjection, StabilizerGenerators)>;
 
 /// Branch-arm footprints retained only while a module linker bulk-adds child
 /// blocks. The editable graph continues to use its ordinary collision path.
@@ -496,6 +489,9 @@ impl BlockGraph {
     ///
     /// Structural and action-affecting edits refresh this DAG; tag-only edits
     /// leave it intact.
+    /// For a module hierarchy, this contains only this definition's authored
+    /// actions. Use [`Self::analyze_action_graph`] for composed dependencies
+    /// including child actions.
     pub fn action_graph(&self) -> &ActionDag {
         &self.action_graph
     }
@@ -512,9 +508,9 @@ impl BlockGraph {
     /// This inspection query does not change the source or compile physical IR.
     /// Authored hierarchies use the compiler's module linker and correlation
     /// composition, retaining definition and instance ownership in each node.
-    /// Continuing branches use the guarded causal readout planner.
-    /// Composed and continuing-branch DAGs retain dependencies without assigning
-    /// a single measurement stabilizer to each node.
+    /// Source actions use the same guarded causal readout planner as compilation.
+    /// Flat DAGs carry the displayed branch arms' measurement surfaces; composed
+    /// DAGs retain dependencies without assigning a surface to each node.
     ///
     /// # Errors
     ///
@@ -534,19 +530,90 @@ impl BlockGraph {
         &self,
         limits: crate::ModuleCertificationLimits,
     ) -> Result<ActionDag, BlockGraphError> {
+        crate::CancellationToken::checkpoint()?;
         if self.has_module_structure() {
             return crate::action_dag::hierarchy::analyze(self, limits);
         }
-        if !self.has_continuing_branches() {
-            let (analyzed, _) = self.clone().analyze_actions_with_limits(limits)?;
-            return Ok(analyzed.action_graph);
-        }
+        self.analyzed_local_action_graph(limits)
+    }
+
+    /// Whether this definition places child module instances.
+    pub(crate) fn has_child_instances(&self) -> bool {
+        !self.instances.is_empty()
+    }
+
+    /// Causal readout plan of this graph as one definition, ignoring any
+    /// module hierarchy around it.
+    pub(crate) fn plan_local_readouts(
+        &self,
+        limits: crate::ModuleCertificationLimits,
+    ) -> Result<crate::GuardedReadoutPlan, BlockGraphError> {
         let topology = crate::GuardedTopology::new(self, limits)?;
-        let mut plan = crate::GuardedSurfaceSpace::new(topology, &Default::default(), limits)?
-            .plan_readouts()?;
+        crate::GuardedSurfaceSpace::new(topology, &Default::default(), limits)?.plan_readouts()
+    }
+
+    /// Plans causal readouts over this source's correlation relation. A flat
+    /// source is one definition; a hierarchy composes its definition relations.
+    fn plan_correlation_readouts(
+        &self,
+        limits: crate::ModuleCertificationLimits,
+    ) -> Result<crate::GuardedReadoutPlan, BlockGraphError> {
+        if self.has_module_structure() {
+            return crate::action_dag::hierarchy::plan_readouts(self, limits).map(|(_, plan)| plan);
+        }
+        self.plan_local_readouts(limits)
+    }
+
+    /// Builds this definition's action DAG with planned readout dependencies
+    /// and the measurement surfaces of its displayed branch arms.
+    fn analyzed_local_action_graph(
+        &self,
+        limits: crate::ModuleCertificationLimits,
+    ) -> Result<ActionDag, BlockGraphError> {
+        let mut plan = self.plan_local_readouts(limits)?;
         let mut dag = self.build_action_graph(&self.actions())?;
         dag.attach_guarded_dependencies(plan.action_dependencies()?)?;
+        crate::CancellationToken::checkpoint()?;
+        // A displayed selection the guards cannot reach has no surfaces to show.
+        if let Some(surfaces) = shown_surfaces(&plan, &self.shown_branch_arms())? {
+            dag.attach_measurement_surfaces(surfaces);
+        }
         Ok(dag)
+    }
+
+    /// Correlation surfaces of one displayed branch selection, from the same
+    /// causal readout plan used by compilation and action analysis.
+    ///
+    /// Named readouts are measurement rows; output frames and closed logical
+    /// surfaces are logical rows. `assignments` selects structural branch arms
+    /// as in [`Self::project_branches`]; omitted branches show their
+    /// true arm. The surfaces are positioned in [`Self::flatten`] coordinates.
+    ///
+    /// ```
+    /// use bloq_graph::{GalleryItem, ModuleCertificationLimits};
+    ///
+    /// let adder = GalleryItem::ThreeBitAdder.build();
+    /// let surfaces = adder.planned_surfaces(&[], ModuleCertificationLimits::DEFAULT)?;
+    /// assert!(
+    ///     surfaces
+    ///         .iter()
+    ///         .any(|row| row.measurement_name() == Some("bit0_uma__m_ikprime"))
+    /// );
+    /// # Ok::<(), bloq_graph::BlockGraphError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid sources, an unreachable arm selection,
+    /// unavailable readouts, or exhausted analysis budgets.
+    pub fn planned_surfaces(
+        &self,
+        assignments: &[(IVec3, bool)],
+        limits: crate::ModuleCertificationLimits,
+    ) -> Result<Vec<StabilizerGenerator>, BlockGraphError> {
+        let plan = self.plan_correlation_readouts(limits)?;
+        shown_surfaces(&plan, assignments)?
+            .ok_or_else(|| InvalidActionError::UnreachableBranchSelection.into())
     }
 
     /// Returns the actions in source order.
@@ -620,193 +687,36 @@ impl BlockGraph {
         ZXGraph::try_from(self).map_err(Into::into)
     }
 
-    /// Derives the stabilizer generators for this graph via the unified compute backend.
-    ///
-    /// Structural sources must first be expanded with
-    /// [`BlockGraph::branch_projections`]; one generator table cannot describe
-    /// several optional topologies.
+    /// Correlation surfaces of the displayed branch arms, from the causal
+    /// readout plan used by compilation. See [`Self::planned_surfaces`].
     ///
     /// # Errors
     ///
-    /// Returns an error if validation or stabilizer derivation fails.
-    pub fn stabilizers(&self) -> Result<StabilizerGenerators, BlockGraphError> {
-        self.stabilizers_with_limits(crate::ModuleCertificationLimits::DEFAULT)
+    /// Returns an error for invalid sources, unavailable readouts, or exhausted
+    /// analysis budgets.
+    pub fn stabilizers(&self) -> Result<Vec<StabilizerGenerator>, BlockGraphError> {
+        self.planned_surfaces(
+            &self.shown_branch_arms(),
+            crate::ModuleCertificationLimits::DEFAULT,
+        )
     }
 
-    /// Derive a static table with explicit construction and search limits.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation, resource limits, or stabilizer derivation fails.
-    pub fn stabilizers_with_limits(
-        &self,
-        limits: crate::ModuleCertificationLimits,
-    ) -> Result<StabilizerGenerators, BlockGraphError> {
-        self.require_flat_hierarchy("stabilizer analysis")?;
-        self.validate_resource_limits(limits)?;
-        if let Some(target) = self.action_graph.ordered_nodes().find_map(|node| {
-            if let Action::Branch { target, .. } = node.action {
-                Some(target)
-            } else {
-                None
-            }
-        }) {
-            return Err(crate::InvalidActionError::MissingBranchValue(target).into());
-        }
-        self.stabilizer_zx_graph(limits)?
-            .stabilizers_with_limits(limits)
-            .map_err(Into::into)
-    }
-
-    fn stabilizer_zx_graph(
-        &self,
-        limits: crate::ModuleCertificationLimits,
-    ) -> Result<ZXGraph, BlockGraphError> {
-        let columns = self
-            .pipe_count()
-            .checked_mul(2)
-            .and_then(|pipes| pipes.checked_add(self.block_count()));
-        if columns.is_none_or(|columns| columns > limits.max_local_columns) {
-            return Err(crate::StabilizerError::ResourceLimited {
-                phase: "local ZX columns",
-                observed: columns.unwrap_or(usize::MAX),
-                limit: limits.max_local_columns,
-            }
-            .into());
-        }
-        ZXGraph::from_block_graph_for_analysis(self).map_err(Into::into)
-    }
-
-    /// Derives the canonical all-true table used by the installed source DAG.
-    /// Named measurement rows must live wholly in the common prefix; otherwise
-    /// one cached Decode action could not describe every projected arm.
-    pub(crate) fn stabilizers_for_action_analysis_with_limits(
-        &self,
-        limits: crate::ModuleCertificationLimits,
-    ) -> Result<StabilizerGenerators, BlockGraphError> {
-        self.stabilizer_analysis_for_actions_impl(limits)
-            .map(|(baseline, _)| baseline)
-    }
-
-    fn stabilizer_analysis_for_actions(
-        &self,
-    ) -> Result<(StabilizerGenerators, AnalyzedBranchProjections), BlockGraphError> {
-        self.stabilizer_analysis_for_actions_impl(crate::ModuleCertificationLimits::DEFAULT)
-    }
-
-    fn stabilizer_analysis_for_actions_impl(
-        &self,
-        limits: crate::ModuleCertificationLimits,
-    ) -> Result<(StabilizerGenerators, AnalyzedBranchProjections), BlockGraphError> {
-        self.validate_resource_limits(limits)?;
-        if self.has_continuing_branches() {
-            return Err(InvalidActionError::GuardedAnalysisRequired.into());
-        }
-        let canonical = self
-            .branches
+    /// The displayed arm of every branch region.
+    fn shown_branch_arms(&self) -> Vec<(IVec3, bool)> {
+        self.branches
             .iter()
-            .any(|region| !region.shown_true())
-            .then(|| self.canonical_true_branch_view())
-            .transpose()?;
-        let graph = canonical.as_ref().unwrap_or(self);
-
-        // Keep Branch actions on the all-true static topology so measurement
-        // construction can avoid self-reader cycles before the final DAG check.
-        let zx = graph.stabilizer_zx_graph(limits)?;
-        let baseline = zx.stabilizers_with_limits(limits)?;
-        if !graph
-            .action_graph
-            .ordered_nodes()
-            .any(|node| matches!(node.action, Action::Branch { .. }))
-        {
-            return Ok((baseline, Vec::new()));
-        }
-        baseline.validate_selective_decoupling()?;
-        let regions = graph.branch_regions()?;
-        for (name, row) in named_measurement_rows(&baseline) {
-            if regions
-                .iter()
-                .any(|region| positioned_stabilizer_touches_region(row, region))
-            {
-                return Err(InvalidActionError::BranchDependentMeasurementSurface {
-                    name: name.to_owned(),
-                }
-                .into());
-            }
-        }
-
-        let mut projections = Vec::new();
-        let measurements = baseline
-            .generators
-            .iter()
-            .filter(|generator| generator.is_measurement())
-            .collect::<Vec<_>>();
-        let static_projections = graph.branch_projections_for_analysis_up_to_with_limits(
-            limits.max_guarded_domain_size.saturating_add(1),
-            limits.boolean_limits(),
-        )?;
-        if static_projections.len() > limits.max_guarded_domain_size {
-            return Err(crate::StabilizerError::ResourceLimited {
-                phase: "action-analysis branch projections",
-                observed: static_projections.len(),
-                limit: limits.max_guarded_domain_size,
-            }
-            .into());
-        }
-        for projection in static_projections {
-            let zx = projection.graph().stabilizer_zx_graph(limits)?;
-            let projected = if let Some(reused) = zx
-                .stabilizers_reusing_measurements(&measurements, limits)?
-                .filter(|candidate| {
-                    candidate.validate_selective_decoupling().is_ok()
-                        && validate_shared_measurement_rows(&baseline, candidate).is_ok()
-                }) {
-                reused
-            } else {
-                let independent = zx.stabilizers_with_limits(limits)?;
-                independent.validate_selective_decoupling()?;
-                validate_shared_measurement_rows(&baseline, &independent)?;
-                independent
-            };
-            let projection = projection.with_analyzed_actions(&projected)?;
-            projections.push((projection, projected));
-        }
-
-        Ok((baseline, projections))
+            .map(|branch| (branch.target, branch.shown_true()))
+            .collect()
     }
 
-    /// Rebuilds the action DAG with stabilizer-derived dependencies and surfaces.
-    ///
-    /// `stabilizers` must come from this graph. The returned graph stores only
-    /// derived metadata; BLOG serialization remains unchanged.
+    /// Installs the planned action analysis: readout dependencies and the
+    /// displayed arms' measurement surfaces.
     ///
     /// # Errors
     ///
-    /// Returns an error if action validation or readout dependency attachment fails.
-    pub fn with_analyzed_action_graph(
-        mut self,
-        stabilizers: &StabilizerGenerators,
-    ) -> Result<Self, BlockGraphError> {
-        let actions = self.actions();
-        let mut dag = self.build_action_graph(&actions)?;
-        stabilizers.validate_selective_decoupling()?;
-        dag.attach_readout_dependencies(&stabilizers.generators, Some(&stabilizers.zx_graph))?;
-        self.install_action_graph(dag, None);
-        Ok(self)
-    }
-
-    /// Computes stabilizers once and installs their derived action analysis.
-    ///
-    /// For a graph with structural branches, the returned table is only the
-    /// canonical all-true, common-prefix analysis table used by the compiler;
-    /// it is not the stabilizer family of the conditional graph. Use
-    /// [`BlockGraph::branch_projections`] and derive each projection's
-    /// stabilizers for semantic inspection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if stabilizer derivation or action analysis fails.
-    pub fn analyze_actions(self) -> Result<(Self, StabilizerGenerators), BlockGraphError> {
+    /// Returns an error for hierarchies, invalid sources, causal cycles,
+    /// unavailable readouts, or exhausted analysis budgets.
+    pub fn analyze_actions(self) -> Result<Self, BlockGraphError> {
         self.analyze_actions_with_limits(crate::ModuleCertificationLimits::DEFAULT)
     }
 
@@ -814,50 +724,31 @@ impl BlockGraph {
     ///
     /// # Errors
     ///
-    /// Returns an error if resource-limited stabilizer derivation or action analysis fails.
+    /// Returns the same errors as [`Self::analyze_actions`] within `limits`.
     pub fn analyze_actions_with_limits(
-        self,
+        mut self,
         limits: crate::ModuleCertificationLimits,
-    ) -> Result<(Self, StabilizerGenerators), BlockGraphError> {
+    ) -> Result<Self, BlockGraphError> {
         self.require_flat_hierarchy("action analysis")?;
-        let (stabilizers, _) = self.stabilizer_analysis_for_actions_impl(limits)?;
-        let graph = self.with_analyzed_action_graph(&stabilizers)?;
-        Ok((graph, stabilizers))
+        self.validate_resource_limits(limits)?;
+        self.analyze_installed_actions(limits)?;
+        Ok(self)
     }
 
-    #[doc(hidden)]
-    pub fn analyze_actions_with_projections(
-        self,
-    ) -> Result<(Self, StabilizerGenerators, AnalyzedBranchProjections), BlockGraphError> {
-        self.require_flat_hierarchy("action analysis")?;
-        let (stabilizers, projections) = self.stabilizer_analysis_for_actions()?;
-        let graph = self.with_analyzed_action_graph(&stabilizers)?;
-        Ok((graph, stabilizers, projections))
-    }
-
-    /// Certifies the complete family without constructing static joint choices.
-    pub(crate) fn validate_guarded_actions_with_limits(
-        &self,
-        limits: crate::ModuleCertificationLimits,
-    ) -> Result<(), BlockGraphError> {
-        let topology = crate::GuardedTopology::new(self, limits)?;
-        crate::GuardedSurfaceSpace::new(topology, &Default::default(), limits)?
-            .plan_readouts()
-            .map(drop)
-    }
-
-    /// Attaches stabilizer-derived dependencies to the already-installed DAG.
+    /// Replaces the installed DAG with its planned analysis. A definition with
+    /// child instances is certified through its composed hierarchy instead:
+    /// that DAG expands child actions, which belong to their authored
+    /// definitions and must not replace this module's source DAG.
     fn analyze_installed_actions(
         &mut self,
         limits: crate::ModuleCertificationLimits,
     ) -> Result<(), BlockGraphError> {
-        if self.has_continuing_branches() {
-            return self.validate_guarded_actions_with_limits(limits);
+        if self.has_child_instances() {
+            return self.analyze_action_graph_with_limits(limits).map(drop);
         }
-        let (stabilizers, _) = self.stabilizer_analysis_for_actions_impl(limits)?;
-        stabilizers.validate_selective_decoupling()?;
-        self.action_graph
-            .attach_readout_dependencies(&stabilizers.generators, Some(&stabilizers.zx_graph))
+        let dag = self.analyzed_local_action_graph(limits)?;
+        self.install_action_graph(dag, None);
+        Ok(())
     }
 
     /// Fills port blocks using compatible external stabilizer support and
@@ -1141,7 +1032,7 @@ impl BlockGraph {
 
     /// Single point of installation for the cached DAG, keeping
     /// `action_graph_error` in lockstep with `action_graph`.
-    fn install_action_graph(&mut self, dag: ActionDag, error: Option<BlockGraphError>) {
+    pub(crate) fn install_action_graph(&mut self, dag: ActionDag, error: Option<BlockGraphError>) {
         self.action_graph = dag;
         self.action_graph_error = error;
     }
@@ -1174,8 +1065,8 @@ impl BlockGraph {
     }
 
     /// Replaces all actions, validating the new set against the graph and, once
-    /// the topology is structurally complete, deriving each measurement's
-    /// stabilizer surface and its implicit dependency edges.
+    /// the topology is structurally complete, certifying guarded readout
+    /// recipes and their implicit dependency edges.
     ///
     /// # Errors
     ///
@@ -1474,9 +1365,19 @@ impl BlockGraph {
     ///
     /// # Errors
     ///
-    /// Returns a flatten-required error for an authored module source.
+    /// Returns a flatten-required error for an authored module source, and
+    /// [`BlockGraphError::BasisFlipUnsupportedMultiplexPort`] for a multiplex
+    /// Port: its split stays Z while the flipped computation would meet it in X.
     pub fn flip_xz_basis_lenient(&self) -> Result<Self, BlockGraphError> {
         self.require_flat_source("basis flipping")?;
+        if let Some(port) = self
+            .blocks()
+            .filter(|block| block.port_role() == Some(crate::PortRole::Multiplex))
+            .map(Block::pos)
+            .min_by_key(IVec3::to_array)
+        {
+            return Err(BlockGraphError::BasisFlipUnsupportedMultiplexPort(port));
+        }
         let mut flipped = self.clone();
         for block in flipped.inner.node_weights_mut() {
             block.kind = block.kind.flip_xz_basis();
@@ -2972,7 +2873,7 @@ impl BlockGraph {
         text: &str,
         limits: crate::ModuleCertificationLimits,
     ) -> Result<Self, BlockGraphError> {
-        crate::parser::parse_graph_input(text, limits)
+        crate::parser::parse_blog_to_graph_with_limits(text, limits)
     }
 
     /// Loads BLOG as a block graph, resolving imports relative to each file.
@@ -3069,89 +2970,37 @@ impl BlockGraph {
     }
 }
 
-fn named_measurement_rows(stabilizers: &StabilizerGenerators) -> BTreeMap<&str, &Stabilizer> {
-    stabilizers
-        .generators
+/// Materializes `plan` under one branch arm selection, or `None` when its
+/// guards cannot reach that selection.
+fn shown_surfaces(
+    plan: &crate::GuardedReadoutPlan,
+    assignments: &[(IVec3, bool)],
+) -> Result<Option<Vec<StabilizerGenerator>>, BlockGraphError> {
+    let source = &plan.topology.source;
+    let absent = assignments
         .iter()
-        .filter_map(|generator| match &generator.kind {
-            StabilizerRowKind::Measurement { name } => Some((name.as_str(), &generator.stabilizer)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn validate_shared_measurement_rows(
-    baseline: &StabilizerGenerators,
-    projected: &StabilizerGenerators,
-) -> Result<(), BlockGraphError> {
-    let baseline_fixings = crate::selective_fixings(&baseline.generators);
-    let projected_fixings = crate::selective_fixings(&projected.generators);
-    let projected_rows = named_measurement_rows(projected);
-    for (name, row) in named_measurement_rows(baseline) {
-        let shared = projected_rows.get(name).is_some_and(|projected| {
-            positioned_stabilizers_equal(row, projected)
-                && shared_measurement_fixings(row, &baseline_fixings, &projected_fixings)
-        });
-        if !shared {
-            return Err(InvalidActionError::BranchDependentMeasurementSurface {
-                name: name.to_owned(),
-            }
-            .into());
-        }
-    }
-    Ok(())
-}
-
-fn positioned_stabilizers_equal(left: &Stabilizer, right: &Stabilizer) -> bool {
-    left.sign == right.sign
-        && left.port_stabilizer == right.port_stabilizer
-        && left.interior_nodes == right.interior_nodes
-        && left.interior_edges == right.interior_edges
-}
-
-fn shared_measurement_fixings(
-    row: &Stabilizer,
-    baseline: &crate::SelectiveFixings<'_>,
-    projected: &crate::SelectiveFixings<'_>,
-) -> bool {
-    let mut sites = row
-        .interior_nodes
-        .iter()
-        .filter_map(|(&pos, &pauli)| {
-            (pauli != crate::Pauli::I && baseline.contains_key(&pos)).then_some(pos)
-        })
-        .collect::<Vec<_>>();
-    let mut seen = sites.iter().copied().collect::<HashSet<_>>();
-    let mut scan = 0;
-    while scan < sites.len() {
-        let site = sites[scan];
-        scan += 1;
-        let base = baseline[&site];
-        let Some(projected) = projected.get(&site) else {
-            return false;
-        };
-        if base.forbidden != projected.forbidden
-            || !positioned_stabilizers_equal(base.row, projected.row)
-        {
-            return false;
-        }
-        for (&pos, &pauli) in &base.row.interior_nodes {
-            if pauli != crate::Pauli::I && baseline.contains_key(&pos) && seen.insert(pos) {
-                sites.push(pos);
-            }
-        }
-    }
-    true
-}
-
-fn positioned_stabilizer_touches_region(row: &Stabilizer, region: &crate::BranchRegion) -> bool {
-    row.interior_nodes
-        .iter()
-        .any(|(&position, &pauli)| pauli != crate::Pauli::I && region.contains_block(position))
-        || row.interior_edges.iter().any(|(&(first, second), &pauli)| {
-            pauli != crate::Pauli::I
-                && (region.contains_block(first) || region.contains_block(second))
-        })
+        .filter(|(_, present)| !present)
+        .map(|&(target, _)| target)
+        .collect();
+    let Some(values) = plan.topology.branch_selection_values(&absent)? else {
+        return Ok(None);
+    };
+    let shown = if source.branch_definitions().is_empty() {
+        source.clone()
+    } else {
+        // A local plan may belong to a module definition; its source is still
+        // one flat body.
+        source.project_branches_impl(
+            source
+                .branch_definitions()
+                .iter()
+                .map(|branch| (branch.target, !absent.contains(&branch.target))),
+            true,
+            crate::branch::ProjectionContext::Graph,
+        )?
+    };
+    let zx = ZXGraph::from_block_graph_for_analysis(&shown)?;
+    Ok(Some(plan.materialize_surfaces(&zx, &values)))
 }
 
 impl std::fmt::Display for BlockGraph {
@@ -3317,7 +3166,11 @@ fn oriented_block_kind(kind: BlockKind, orientation: crate::ModuleOrientation) -
     }
 }
 
-fn normalize_z_position(position: IVec3, min_z: i32, max_z: i32) -> Result<IVec3, BlockGraphError> {
+pub(crate) fn normalize_z_position(
+    position: IVec3,
+    min_z: i32,
+    max_z: i32,
+) -> Result<IVec3, BlockGraphError> {
     let z = i64::from(position.z) - i64::from(min_z);
     let z = i32::try_from(z)
         .map_err(|_| BlockGraphError::CoordinateNormalizationOverflow { min_z, max_z })?;
@@ -3367,7 +3220,6 @@ fn normalize_action_z(action: &Action, min_z: i32, max_z: i32) -> Result<Action,
 mod tests {
     use super::*;
     use crate::{BranchArm, Expr, GalleryItem, SelectiveKind, StabilizerError};
-    use bloq_utils::Pauli;
 
     #[test]
     fn cube_height_edits_preserve_connected_endpoints() {
@@ -3406,7 +3258,7 @@ mod tests {
     fn executable_flat_exports_round_trip_linked_symbols_without_collisions() {
         for source in [
             GalleryItem::PhaseGradientK4.build(),
-            BlockGraph::from_text(bloq_test::ONE_BIT_ADDER_SOURCE).unwrap(),
+            GalleryItem::ThreeBitAdder.build(),
         ] {
             let graph = source
                 .materialize_root_graph()
@@ -3575,7 +3427,7 @@ mod tests {
             .materialize_root_graph()
             .expect("gallery flat projection");
         let stabilizers = graph.stabilizers().expect("CNOT stabilizers");
-        let stabilizer = &stabilizers.generators[0];
+        let stabilizer = &stabilizers[0];
 
         let transparent = graph
             .build_export_gltf(2.0, Some(stabilizer), &[])
@@ -3592,27 +3444,6 @@ mod tests {
         assert!(popped.triangles.keys().all(|color| color.a == 255));
         assert!(popped.triangles.contains_key(&POPPED_X_FACE_COLOR));
         assert!(popped.triangles.contains_key(&POPPED_Z_FACE_COLOR));
-    }
-
-    #[test]
-    fn to_blog_text_serializes_action_dag_in_ordinal_order() {
-        let mut graph = BlockGraph::new();
-        graph.add_block(Block::new(
-            glam::ivec3(0, 0, 0),
-            BlockKind::Cube(CubeKind::ZXZ),
-        ));
-        graph
-            .set_actions_lenient(vec![Action::Measure {
-                target: MeasureTarget::Node(glam::ivec3(0, 0, 0)),
-                name: "m0".into(),
-            }])
-            .unwrap();
-
-        let text = graph.to_blog_text();
-        assert!(text.starts_with("BLOG 1.0\n"));
-        assert!(text.contains("m0 = measure 0\n"));
-        assert!(!text.contains("debug"));
-        assert!(!text.contains("set_time"));
     }
 
     #[test]
@@ -3879,6 +3710,100 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_guarded_action_install_restores_the_previous_dag() {
+        let mut graph = BlockGraph::new();
+        graph.add_block(Block::new(
+            glam::IVec3::ZERO,
+            BlockKind::Cube(CubeKind::ZXZ),
+        ));
+        let actions = vec![Action::Measure {
+            target: MeasureTarget::Node(glam::IVec3::ZERO),
+            name: "m".into(),
+        }];
+        let token = crate::CancellationToken::new();
+        let error = token.scope(|| {
+            token.cancel();
+            graph.set_actions(actions.clone()).unwrap_err()
+        });
+        assert!(matches!(
+            error,
+            BlockGraphError::Stabilizer(crate::StabilizerError::Cancelled(_))
+        ));
+        assert!(graph.actions().is_empty());
+        assert!(graph.action_graph_error().is_none());
+        graph.set_actions(actions).unwrap();
+        assert!(graph.action_graph().is_analyzed());
+    }
+
+    #[test]
+    fn setting_leaf_module_actions_retains_readout_dependencies() {
+        let mut graph = BlockGraph::from_text(
+            r#"BLOG 1.0
+module main {
+  in input: data = 0
+  out result = m
+  0: Port [0, 0, -1] role=input
+  1: ZXZ [0, 0, 0]
+  2: X [0, 0, 1]
+  0 -> +Z
+  1 -> +Z
+  feedback Z 1 -> +Z
+  m = measure 2
+}
+"#,
+        )
+        .unwrap();
+        let actions = graph.actions();
+        graph.set_actions(actions.clone()).unwrap();
+        assert_eq!(graph.actions(), actions);
+        assert!(graph.action_graph().is_analyzed());
+        assert!(
+            graph
+                .action_graph()
+                .dependencies()
+                .any(|edge| { edge == (0, 1, crate::ActionDependency::FeedbackAnticommutation) })
+        );
+        graph.validate().unwrap();
+    }
+
+    #[test]
+    fn setting_hierarchical_actions_preserves_authored_module_boundaries() {
+        let mut graph = BlockGraph::from_text(
+            "BLOG 1.0\n\
+             module Child {\n\
+               0: ZXZ [0, 0, 0]\n\
+               child_m = measure 0\n\
+             }\n\
+             module main {\n\
+               child: Child @ [3, 0, 0]\n\
+               0: ZXZ [0, 0, 0]\n\
+             }\n",
+        )
+        .unwrap();
+        let actions = vec![Action::Measure {
+            target: MeasureTarget::Node(glam::IVec3::ZERO),
+            name: "root_m".into(),
+        }];
+
+        graph.set_actions(actions.clone()).unwrap();
+        assert_eq!(graph.actions(), actions);
+        graph.validate().unwrap();
+        let text = graph.to_blog_text();
+        let restored = BlockGraph::from_text(&text).unwrap();
+        assert_eq!(restored.actions(), actions);
+        assert_eq!(restored.to_blog_text(), text);
+        assert_eq!(
+            graph
+                .analyze_action_graph()
+                .unwrap()
+                .ordered_nodes()
+                .count(),
+            2
+        );
+        assert_eq!(graph.to_blog_text(), text);
+    }
+
+    #[test]
     fn block_graph_set_actions_enriches_measurements_before_conversion() {
         use crate::{MeasureTarget, MeasurementObservable};
         use glam::ivec3;
@@ -3920,57 +3845,8 @@ mod tests {
         graph.validate_source().unwrap();
         assert!(!graph.action_graph().is_analyzed());
 
-        let (graph, _) = graph.analyze_actions().unwrap();
+        let graph = graph.analyze_actions().unwrap();
         assert!(graph.action_graph().is_analyzed());
-    }
-
-    #[test]
-    fn projected_measurement_must_match_shared_decode() {
-        let graph = GalleryItem::CCZGateTeleport
-            .build()
-            .materialize_root_graph()
-            .expect("gallery flat projection");
-        let (_, baseline, projections) = graph.analyze_actions_with_projections().unwrap();
-        let mut projected = projections[0].1.clone();
-        let row = projected
-            .generators
-            .iter_mut()
-            .find(|row| row.is_measurement())
-            .unwrap();
-        let name = row.measurement_name().unwrap().to_owned();
-        row.stabilizer.sign ^= true;
-
-        assert!(matches!(
-            validate_shared_measurement_rows(&baseline, &projected),
-            Err(BlockGraphError::InvalidAction(
-                InvalidActionError::BranchDependentMeasurementSurface { name: rejected }
-            )) if rejected == name
-        ));
-    }
-
-    #[test]
-    fn projected_measurement_fixings_must_match_shared_decode() {
-        let (_, baseline) = GalleryItem::PhaseGradientK4
-            .build()
-            .materialize_root_graph()
-            .expect("gallery flat projection")
-            .analyze_actions()
-            .unwrap();
-        let mut projected = baseline.clone();
-        projected
-            .generators
-            .iter_mut()
-            .find(|row| matches!(row.kind, StabilizerRowKind::SelectiveFixing { .. }))
-            .unwrap()
-            .stabilizer
-            .sign ^= true;
-
-        assert!(matches!(
-            validate_shared_measurement_rows(&baseline, &projected),
-            Err(BlockGraphError::InvalidAction(
-                InvalidActionError::BranchDependentMeasurementSurface { .. }
-            ))
-        ));
     }
 
     #[test]
@@ -3989,56 +3865,12 @@ mod tests {
 
         assert!(matches!(
             err,
-            BlockGraphError::Stabilizer(StabilizerError::MeasurementSurfaceUnavailable {
-                ref mvar
+            BlockGraphError::Stabilizer(StabilizerError::UnavailableControlParity {
+                ref mvar,
+                ..
             }) if mvar == "mzz"
         ));
         assert!(graph.actions().is_empty());
-    }
-
-    #[test]
-    fn complete_surface_fallback_backtracks_across_cz_records() {
-        let mut graph = GalleryItem::CZSpatialH
-            .build()
-            .materialize_root_graph()
-            .expect("gallery flat projection");
-        graph.clear_actions();
-        let actions = vec![
-            Action::Measure {
-                target: MeasureTarget::Node(glam::ivec3(0, 0, 1)),
-                name: "a".into(),
-            },
-            Action::Measure {
-                target: MeasureTarget::Node(glam::ivec3(1, 0, 1)),
-                name: "b".into(),
-            },
-        ];
-        let mut greedy_probe = graph.clone();
-        greedy_probe.set_actions_lenient(actions.clone()).unwrap();
-        let zx = ZXGraph::from_block_graph_for_analysis(&greedy_probe).unwrap();
-        assert!(matches!(
-            zx.to_stabilizer_table(),
-            Err(StabilizerError::MeasurementSurfaceUnavailable { ref mvar }) if mvar == "b"
-        ));
-
-        graph.set_actions(actions).unwrap();
-        for (ordinal, pos) in [glam::ivec3(0, 0, 1), glam::ivec3(1, 0, 1)]
-            .into_iter()
-            .enumerate()
-        {
-            let node = graph.action_graph().node_by_ordinal(ordinal).unwrap();
-            let Some(MeasurementObservable::Concrete(basis)) = node.measurement else {
-                panic!("CZ node measurement has a concrete basis");
-            };
-            assert_eq!(
-                node.measurement_stabilizer
-                    .as_ref()
-                    .unwrap()
-                    .interior_nodes
-                    .get(&pos),
-                Some(&Pauli::from(basis))
-            );
-        }
     }
 
     #[test]

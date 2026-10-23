@@ -19,13 +19,12 @@ use crate::resources::{
     PlacementTool,
 };
 use crate::systems::input::{
-    PATCH_ROTATION_MOVEMENTS, PIPE_HINT_OFFSETS, WALKING_MOVEMENTS,
-    is_hadamard_pipe_modifier_pressed, on_element_click, on_element_drag_end,
-    on_element_drag_start, on_element_out, on_element_over, patch_rotation_candidate_kind,
-    patch_rotation_pipe_hint_target, patch_rotation_start_has_candidate,
-    pipe_candidate_at_with_snapshot, pipe_hint_target_with_snapshot, pipe_mode_selected_elements,
-    tall_cube_pipe_hint_target, walking_candidate_kind, walking_pipe_hint_target,
-    walking_port_promotion_candidate, walking_start_has_candidate,
+    PIPE_HINT_OFFSETS, WALKING_MOVEMENTS, is_hadamard_pipe_modifier_pressed,
+    moving_block_candidate_kind, moving_block_movements, moving_block_start_has_candidate,
+    on_element_click, on_element_drag_end, on_element_drag_start, on_element_out, on_element_over,
+    patch_rotation_pipe_hint_target, pipe_candidate_at_with_snapshot,
+    pipe_hint_target_with_snapshot, pipe_mode_selected_elements, tall_cube_pipe_hint_target,
+    walking_pipe_hint_target, walking_port_promotion_candidate,
 };
 use crate::theme::{self, ThemePreset};
 use crate::utils::{
@@ -1049,7 +1048,6 @@ mod tests {
         let stabilizer = graph
             .stabilizers()
             .unwrap()
-            .generators
             .into_iter()
             .find(bloq_graph::StabilizerGenerator::is_measurement)
             .unwrap();
@@ -1787,7 +1785,7 @@ mod tests {
             ..Default::default()
         };
         let editor = EditorState {
-            stabilizers: graph_state.graph.stabilizers().unwrap().generators,
+            stabilizers: graph_state.graph.stabilizers().unwrap(),
             show_stabilizers: false,
             ..Default::default()
         };

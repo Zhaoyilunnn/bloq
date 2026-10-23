@@ -24,8 +24,8 @@ pub enum InvalidBlockGraphError {
     /// A spatial port lacks an explicit input, output, or multiplex role.
     #[error("spatial Port at {0} must declare role=input, role=output, or role=multiplex")]
     SpatialPortRoleRequired(IVec3),
-    /// A temporal port's declared role disagrees with its pipe direction.
-    #[error("temporal Port at {pos} declares role {declared}, but its pipe makes it {inferred}")]
+    /// A temporal port declares a role requiring a spatial connection.
+    #[error("temporal Port at {pos} cannot use role {declared}; its inferred role is {inferred}")]
     TemporalPortRoleMismatch {
         /// Port position.
         pos: IVec3,
@@ -199,11 +199,6 @@ pub enum InvalidActionError {
         /// Interface mismatch diagnostic.
         reason: String,
     },
-    /// Static stabilizer analysis was requested for continuing branches.
-    #[error(
-        "continuing branches require GuardedSurfaceSpace; select a projection for a static stabilizer table"
-    )]
-    GuardedAnalysisRequired,
     /// A branch selector depends on a measurement inside that branch.
     #[error("branch target {target} is controlled by measurement {controller:?} inside its region")]
     BranchControllerInside {
@@ -233,18 +228,15 @@ pub enum InvalidActionError {
     /// A requested branch projection omits a branch value.
     #[error("branch target {0} has no projection value")]
     MissingBranchValue(IVec3),
+    /// A requested branch-arm selection has no reachable source outcomes.
+    #[error("requested branch arm selection is unreachable")]
+    UnreachableBranchSelection,
     /// A requested branch projection names an unknown branch.
     #[error("projection value names unknown branch target {0}")]
     UnknownBranchValue(IVec3),
     /// A requested branch projection assigns one branch more than once.
     #[error("branch target {0} has more than one projection value")]
     DuplicateBranchValue(IVec3),
-    /// A named measurement has different stabilizer support across branch arms.
-    #[error("measurement {name:?} has branch-dependent stabilizer support")]
-    BranchDependentMeasurementSurface {
-        /// Measurement record name.
-        name: String,
-    },
     /// A selective block has no resolve action.
     #[error("Selective block at {target} is missing its resolve action")]
     MissingResolveForSelective {
@@ -266,7 +258,7 @@ pub enum InvalidActionError {
 }
 
 /// Validates graph structure and action semantics, then — once the cached DAG
-/// is stale — the stabilizer-derived measurement surfaces and dependency edges.
+/// is stale — the guarded readout certificates and dependency edges.
 pub(crate) fn validate(graph: &BlockGraph) -> Result<(), BlockGraphError> {
     validate_with_limits(graph, crate::ModuleCertificationLimits::DEFAULT)
 }
@@ -277,17 +269,13 @@ pub(crate) fn validate_with_limits(
 ) -> Result<(), BlockGraphError> {
     let mut dag = validate_source(graph)?;
     let regions = graph.branch_regions()?;
-    if graph.has_continuing_branches() {
-        return graph.validate_guarded_actions_with_limits(limits);
-    }
     if (!regions.is_empty() || graph.has_actions()) && !graph.action_graph().is_analyzed() {
-        let stabilizers = if regions.is_empty() {
-            graph.stabilizers_with_limits(limits)?
-        } else {
-            graph.stabilizers_for_action_analysis_with_limits(limits)?
-        };
-        stabilizers.validate_selective_decoupling()?;
-        dag.attach_readout_dependencies(&stabilizers.generators, Some(&stabilizers.zx_graph))?;
+        // A parent's installed DAG stays unanalyzed; certify its composition.
+        if graph.has_child_instances() {
+            return graph.analyze_action_graph_with_limits(limits).map(drop);
+        }
+        let mut plan = graph.plan_local_readouts(limits)?;
+        dag.attach_guarded_dependencies(plan.action_dependencies()?)?;
     }
     Ok(())
 }
@@ -444,23 +432,21 @@ fn collect_block_constraint_errors(graph: &BlockGraph, errors: &mut Vec<BlockGra
                             InvalidBlockGraphError::SpatialPortRoleRequired(block.pos()).into(),
                         );
                     }
-                    if !has_spatial_pipe && role != crate::PortRole::Auto {
+                    if !has_spatial_pipe && role == crate::PortRole::Multiplex {
                         let inferred = if neighbors[0].z > block.pos().z {
                             crate::PortRole::Input
                         } else {
                             crate::PortRole::Output
                         };
-                        if role != inferred {
-                            errors.push(
-                                InvalidBlockGraphError::TemporalPortRoleMismatch {
-                                    pos: block.pos(),
-                                    declared: role,
-                                    inferred,
-                                }
-                                .into(),
-                            );
-                            continue;
-                        }
+                        errors.push(
+                            InvalidBlockGraphError::TemporalPortRoleMismatch {
+                                pos: block.pos(),
+                                declared: role,
+                                inferred,
+                            }
+                            .into(),
+                        );
+                        continue;
                     }
                 }
                 let spatial_allowed = block.kind == BlockKind::Port;
@@ -939,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn spatial_ports_require_roles_and_temporal_roles_must_match_time() {
+    fn port_roles_are_independent_of_temporal_direction() {
         let mut spatial = BlockGraph::new();
         spatial.add_block(Block::new(IVec3::ZERO, BlockKind::Port));
         spatial.add_block(Block::new(IVec3::X, BlockKind::Cube(CubeKind::ZXZ)));
@@ -950,38 +936,41 @@ mod tests {
                 InvalidBlockGraphError::SpatialPortRoleRequired(IVec3::ZERO)
             ))
         ));
-        spatial
-            .set_port_role(IVec3::ZERO, crate::PortRole::Input)
-            .unwrap();
-        validate(&spatial).expect("directed spatial Port validates");
-        spatial
-            .set_port_role(IVec3::ZERO, crate::PortRole::Multiplex)
-            .unwrap();
-        validate(&spatial).expect("Multiplex spatial Port validates");
+        for role in [
+            crate::PortRole::Input,
+            crate::PortRole::Output,
+            crate::PortRole::Multiplex,
+        ] {
+            spatial.set_port_role(IVec3::ZERO, role).unwrap();
+            validate(&spatial).expect("directed spatial Port validates");
+        }
 
         let mut temporal = BlockGraph::new();
-        temporal.add_block(
-            Block::new(IVec3::ZERO, BlockKind::Port)
-                .with_port_role(crate::PortRole::Output)
-                .unwrap(),
-        );
+        temporal.add_block(Block::new(IVec3::ZERO, BlockKind::Port));
         temporal.add_block(Block::new(IVec3::Z, BlockKind::Cube(CubeKind::ZXZ)));
+        temporal.add_block(Block::new(2 * IVec3::Z, BlockKind::Port));
         temporal.add_pipe(Pipe::new(IVec3::ZERO, Direction::ZPLUS));
-        assert!(matches!(
-            validate(&temporal),
-            Err(BlockGraphError::Invalid(
-                InvalidBlockGraphError::TemporalPortRoleMismatch { .. }
-            ))
-        ));
-        temporal
-            .set_port_role(IVec3::ZERO, crate::PortRole::Multiplex)
-            .unwrap();
-        assert!(matches!(
-            validate(&temporal),
-            Err(BlockGraphError::Invalid(
-                InvalidBlockGraphError::TemporalPortRoleMismatch { .. }
-            ))
-        ));
+        temporal.add_pipe(Pipe::new(IVec3::Z, Direction::ZPLUS));
+        for port in [IVec3::ZERO, 2 * IVec3::Z] {
+            for role in [
+                crate::PortRole::Auto,
+                crate::PortRole::Input,
+                crate::PortRole::Output,
+            ] {
+                temporal.set_port_role(port, role).unwrap();
+                validate(&temporal).expect("either temporal direction accepts the declared role");
+            }
+            temporal
+                .set_port_role(port, crate::PortRole::Multiplex)
+                .unwrap();
+            assert!(matches!(
+                validate(&temporal),
+                Err(BlockGraphError::Invalid(
+                    InvalidBlockGraphError::TemporalPortRoleMismatch { .. }
+                ))
+            ));
+            temporal.set_port_role(port, crate::PortRole::Auto).unwrap();
+        }
     }
 
     #[test]

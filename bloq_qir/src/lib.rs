@@ -8,6 +8,7 @@
 mod decoder_abi;
 mod emit;
 mod quantum;
+mod validation;
 
 use std::path::PathBuf;
 

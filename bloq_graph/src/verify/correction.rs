@@ -15,12 +15,132 @@ use crate::{
     ZXGraph,
 };
 
-use super::feedback::{FeedbackInferenceError, checked_count};
 use super::parity::{phase_constant, phase_value};
 use super::{
     MeasurementKey, QuizxGraph, VerifyLogicalError, replay_fill, solve_evolved_correction,
     stabilizer_supports_measurement,
 };
+
+/// The readout of every named record in `basis`, by name: a relation row
+/// that reads the record's key and no other named key, preferring one that
+/// avoids live outputs and then the earliest final layer. Unnamed records may
+/// cross it; sampling compensates them. A crossing centre is the OR of its
+/// arms, so every condition is linear in the arm components.
+pub(super) fn named_readouts(
+    basis: &RuntimeStabilizerBasis,
+    records: &BTreeMap<String, MeasurementKey>,
+) -> Result<BTreeMap<String, crate::Stabilizer>, VerifyLogicalError> {
+    let zx = basis.zx_graph();
+    let components = records
+        .iter()
+        .map(|(name, key)| (name.as_str(), key_components(zx, key)))
+        .collect::<Vec<_>>();
+    let outputs = zx
+        .nodes()
+        .iter()
+        .filter(|node| node.is_output_port(zx))
+        .flat_map(|node| {
+            let axes: &[Pauli] = if node.role == crate::PortRole::Multiplex {
+                &[Pauli::X]
+            } else {
+                &[Pauli::X, Pauli::Z]
+            };
+            axes.iter().map(move |&axis| (node.id, axis))
+        })
+        .collect::<Vec<_>>();
+    // Columns by layer, latest first; an edge belongs to its later endpoint.
+    let mut layers = BTreeMap::<std::cmp::Reverse<i32>, Vec<(usize, Pauli)>>::new();
+    let columns = zx
+        .nodes()
+        .iter()
+        .map(|node| (node.id, node.pos.z))
+        .chain(zx.edges().iter().map(|edge| {
+            let z = zx.nodes()[edge.n1].pos.z.max(zx.nodes()[edge.n2].pos.z);
+            (edge.id, z)
+        }));
+    for (column, z) in columns {
+        layers
+            .entry(std::cmp::Reverse(z))
+            .or_default()
+            .extend([(column, Pauli::X), (column, Pauli::Z)]);
+    }
+    components
+        .iter()
+        .map(|(name, target)| {
+            let others = components
+                .iter()
+                .filter(|(other, _)| other != name)
+                .flat_map(|(_, components)| components.iter().copied())
+                .collect::<Vec<_>>();
+            [true, false]
+                .into_iter()
+                .find_map(|output_free| {
+                    let mut constraints = others.clone();
+                    if output_free {
+                        constraints.extend(outputs.iter().copied());
+                    }
+                    earliest_reading_row(basis.generators(), &constraints, target, &layers)
+                })
+                .map(|row| ((*name).to_owned(), zx.materialize_stabilizer(row)))
+                .ok_or_else(|| VerifyLogicalError::MeasurementPhaseUnavailable((*name).to_owned()))
+        })
+        .collect()
+}
+
+/// Linear components whose OR is the support a key reads.
+fn key_components(zx: &ZXGraph, key: &MeasurementKey) -> Vec<(usize, Pauli)> {
+    let (column, pauli) = match *key {
+        MeasurementKey::Node { pos, pauli } => {
+            (zx.node_at(pos).expect("record node exists").id, pauli)
+        }
+        MeasurementKey::Edge { src, dst, pauli } => {
+            let src = zx.node_at(src).expect("record edge source exists").id;
+            let dst = zx.node_at(dst).expect("record edge target exists").id;
+            (
+                zx.edge_between(src, dst).expect("record edge exists").id,
+                pauli,
+            )
+        }
+    };
+    pauli
+        .iter_xz()
+        .flat_map(|axis| zx.readout_components(column, axis))
+        .collect()
+}
+
+/// A row of the span of `rows` that avoids every constraint component and
+/// carries some target component, with no support after the earliest layer
+/// at which such a row exists.
+fn earliest_reading_row(
+    rows: &[crate::PauliString],
+    constraints: &[(usize, Pauli)],
+    target: &[(usize, Pauli)],
+    layers: &BTreeMap<std::cmp::Reverse<i32>, Vec<(usize, Pauli)>>,
+) -> Option<crate::PauliString> {
+    let reads =
+        |row: &crate::PauliString| target.iter().any(|&(column, axis)| row.get(column) & axis);
+    let mut kernel = rows.to_vec();
+    let restrict = |kernel: &mut Vec<crate::PauliString>, constraints: &[(usize, Pauli)]| {
+        let pivots = crate::zx::gaussian_elimination_with_tracking(
+            kernel,
+            &mut [],
+            constraints.iter().copied(),
+            |row, &(column, axis)| row.get(column) & axis,
+            None,
+        );
+        kernel.drain(..pivots);
+    };
+    restrict(&mut kernel, constraints);
+    let mut best = kernel.iter().find(|row| reads(row))?.clone();
+    for columns in layers.values() {
+        restrict(&mut kernel, columns);
+        match kernel.iter().find(|row| reads(row)) {
+            Some(row) => best = row.clone(),
+            None => break,
+        }
+    }
+    Some(best)
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct InternalCorrection {
@@ -28,237 +148,15 @@ pub(super) struct InternalCorrection {
     sampled: Vec<(MeasurementKey, Var)>,
     initial_basis: RuntimeStabilizerBasis,
     named_vars: BTreeMap<String, Var>,
-    readouts: BTreeMap<String, crate::StabilizerGenerator>,
+    records: BTreeMap<String, MeasurementKey>,
 }
 
 pub(super) struct ResolvedCorrection {
     pub(super) basis: RuntimeStabilizerBasis,
     pub(super) phases: BTreeMap<MeasurementKey, Parity>,
-    readouts: Vec<crate::Stabilizer>,
 }
 
 impl InternalCorrection {
-    /// Cover anonymous coordinates by complete corrected boundary-sign classes.
-    ///
-    /// With resource legs open, exposing the native phase bits as outcome legs
-    /// gives one Clifford stabilizer tensor. The resolved basis must span its
-    /// full correlation space, including private rows: its closed kernel then
-    /// gives complete affine support, and nonzero outcome slices have equal
-    /// norm. Complete boundary signs identify their rays; equal coordinate
-    /// fibers therefore have equal Kraus weight, not just equal directions.
-    /// A fixed resource contraction preserves within-class unit-phase equality,
-    /// while different classes may acquire different norms or vanish.
-    pub(super) fn representatives(
-        &self,
-        outputs: &[IVec3],
-        actions: &[ActionNode],
-        values: &FxHashMap<Var, bool>,
-        feedback_values: &FxHashMap<usize, bool>,
-        resolved: &ResolvedCorrection,
-        limit: usize,
-    ) -> Result<Vec<FxHashMap<Var, bool>>, FeedbackInferenceError> {
-        let ResolvedCorrection {
-            basis,
-            phases,
-            readouts,
-        } = resolved;
-        let surfaces = basis.resolved_surfaces();
-        let columns = surfaces
-            .iter()
-            .map(|surface| pauli_coeffs(&surface.paulis))
-            .collect::<Vec<_>>();
-        // Validate the actual readout recipe, not merely the existence of some
-        // C0 witness. A later fill must preserve its signed Clifford relation.
-        for (name, readout) in self.named_vars.keys().zip(readouts) {
-            if solve_coeff_combination(&columns, &pauli_coeffs(&readout.paulis)).is_none()
-                || basis
-                    .zx_graph()
-                    .materialize_stabilizer(readout.paulis.clone())
-                    .sign
-                    != readout.sign
-                || basis
-                    .zx_graph()
-                    .nodes()
-                    .iter()
-                    .filter(|node| node.is_output_port(basis.zx_graph()))
-                    .any(|node| {
-                        let pauli = readout.paulis.get(node.id);
-                        if node.role == crate::PortRole::Multiplex {
-                            pauli & Pauli::X
-                        } else {
-                            pauli != Pauli::I
-                        }
-                    })
-            {
-                return Err(FeedbackInferenceError::ReadoutConventionUnavailable(
-                    name.clone(),
-                ));
-            }
-        }
-        let variables = self.sampled_vars().collect::<Vec<_>>();
-        let variable_set = variables.iter().copied().collect::<BTreeSet<_>>();
-        let named = phases
-            .iter()
-            .map(|(key, parity)| {
-                (
-                    key.clone(),
-                    phase_value(parity, |variable| {
-                        !variable_set.contains(&variable) && values[&variable]
-                    }),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let closed = basis.closed_stabilizer_surfaces();
-        let constraints = self.parity_columns(&closed, phases);
-        let mut rhs = CoeffVec::zeros(closed.len());
-        for (row, surface) in closed.iter().enumerate() {
-            let parity = named.iter().fold(surface.sign, |odd, (key, value)| {
-                odd ^ (*value && stabilizer_supports_measurement(surface, key))
-            }) ^ feedback_sign(surface, basis.zx_graph(), actions, feedback_values);
-            rhs.set_bit(row, parity);
-        }
-        let Some(witness) = solve_coeff_combination(&constraints, &rhs) else {
-            return Ok(Vec::new());
-        };
-        let directions = kernel_directions(&constraints);
-        let reference = self.apply_coordinate(phases, named.clone(), &witness);
-        let (correction_surfaces, correction) =
-            solve_evolved_correction(basis, outputs, |surface| {
-                phases
-                    .keys()
-                    .any(|key| stabilizer_supports_measurement(surface, key))
-            })?;
-        let correction_columns = self.parity_columns(&correction_surfaces, phases);
-        let mut constant = CoeffVec::zeros(correction_surfaces.len());
-        for (row, surface) in correction_surfaces.iter().enumerate() {
-            constant.set_bit(
-                row,
-                named.iter().fold(false, |odd, (key, value)| {
-                    odd ^ ((*value ^ reference[key])
-                        && stabilizer_supports_measurement(surface, key))
-                }),
-            );
-        }
-        // Discharge every runtime consistency condition on the affine domain,
-        // without treating a failed correction as a physically impossible shot.
-        let witness_rhs = combine_columns(&correction_columns, &witness, constant.clone());
-        correction.evaluate(
-            &(0..witness_rhs.len())
-                .map(|bit| witness_rhs.bit(bit))
-                .collect::<Vec<_>>(),
-        )?;
-        for direction in &directions {
-            let test = combine_columns(&correction_columns, direction, witness_rhs.clone());
-            correction.evaluate(&(0..test.len()).map(|bit| test.bit(bit)).collect::<Vec<_>>())?;
-        }
-        if directions.is_empty() {
-            checked_count(0, limit, "anonymous boundary classes")?;
-            return Ok(vec![
-                variables
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &variable)| (variable, witness.bit(index)))
-                    .collect(),
-            ]);
-        }
-
-        let full_columns = self.parity_columns(&surfaces, phases);
-        let (bodies, extra_outputs, boundary_qubits) = boundary_bodies(basis, &surfaces, outputs)?;
-        let mut independent = Vec::<CoeffVec>::new();
-        for body in &bodies {
-            let column = pauli_coeffs(body);
-            if solve_coeff_combination(&independent, &column).is_none() {
-                independent.push(column);
-            }
-        }
-        if independent.len() != boundary_qubits
-            || bodies.iter().enumerate().any(|(index, body)| {
-                bodies[..index]
-                    .iter()
-                    .any(|other| !body.commutes_with(other))
-            })
-        {
-            return Err(FeedbackInferenceError::IncompleteCertificate {
-                rank: independent.len(),
-                expected: boundary_qubits,
-            });
-        }
-
-        let mut signatures = Vec::<CoeffVec>::new();
-        let mut selected = Vec::new();
-        for direction in directions {
-            let changes = combine_columns(
-                &correction_columns,
-                &direction,
-                CoeffVec::zeros(correction_surfaces.len()),
-            );
-            let frames = correction
-                .frames()
-                .iter()
-                .map(|pair| {
-                    let x = pair
-                        .x
-                        .iter()
-                        .fold(false, |odd, &row| odd ^ changes.bit(row));
-                    let z = pair
-                        .z
-                        .iter()
-                        .fold(false, |odd, &row| odd ^ changes.bit(row));
-                    match (x, z) {
-                        (false, false) => Pauli::I,
-                        (true, false) => Pauli::X,
-                        (false, true) => Pauli::Z,
-                        (true, true) => Pauli::Y,
-                    }
-                })
-                .collect::<Vec<_>>();
-            let native =
-                combine_columns(&full_columns, &direction, CoeffVec::zeros(surfaces.len()));
-            let mut signature = CoeffVec::zeros(bodies.len());
-            for (row, surface) in surfaces.iter().enumerate() {
-                let correction =
-                    outputs
-                        .iter()
-                        .zip(&frames)
-                        .fold(false, |odd, (position, frame)| {
-                            let node = basis
-                                .zx_graph()
-                                .node_at(*position)
-                                .expect("validated output");
-                            odd ^ frame.anticommutes(surface.paulis.get(node.id))
-                        });
-                signature.set_bit(row, native.bit(row) ^ correction);
-            }
-            for (extra, &output) in extra_outputs.iter().enumerate() {
-                signature.set_bit(
-                    surfaces.len() + extra,
-                    frames[output].anticommutes(Pauli::Z),
-                );
-            }
-            if solve_coeff_combination(&signatures, &signature).is_none() {
-                signatures.push(signature);
-                selected.push(direction);
-                checked_count(selected.len(), limit, "anonymous boundary classes")?;
-            }
-        }
-        let count = checked_count(selected.len(), limit, "anonymous boundary classes")?;
-        Ok((0..count)
-            .map(|mask| {
-                let mut coordinate = witness.clone();
-                for (bit, direction) in selected.iter().enumerate() {
-                    if mask & (1 << bit) != 0 {
-                        coordinate.xor_assign(direction);
-                    }
-                }
-                variables
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &variable)| (variable, coordinate.bit(index)))
-                    .collect()
-            })
-            .collect())
-    }
-
     fn parity_columns(
         &self,
         surfaces: &[crate::Stabilizer],
@@ -286,6 +184,7 @@ impl InternalCorrection {
         zx: &ZXGraph,
         named_phases: &BTreeMap<MeasurementKey, Parity>,
         named_vars: &BTreeMap<String, Var>,
+        records: BTreeMap<String, MeasurementKey>,
         next_var: &mut usize,
     ) -> Result<Self, VerifyLogicalError> {
         let keys = measurement_keys(zx);
@@ -303,45 +202,21 @@ impl InternalCorrection {
             sampled.push((key, variable));
         }
 
-        let (initial_basis, readouts) = if named_vars.is_empty() {
-            let basis = RuntimeStabilizerBasis::from_zx_graph(zx.clone()).map_err(|source| {
-                VerifyLogicalError::RuntimeBasisInitializationFailed { source }
-            })?;
-            (basis, BTreeMap::new())
+        let initial_basis = RuntimeStabilizerBasis::from_zx_graph(zx.clone())
+            .map_err(|source| VerifyLogicalError::RuntimeBasisInitializationFailed { source })?;
+        let anchors = if sampled.is_empty() {
+            BTreeMap::new()
         } else {
-            let mut stabilizers = zx.stabilizers().map_err(|source| {
-                VerifyLogicalError::RuntimeBasisInitializationFailed {
-                    source: source.into(),
-                }
-            })?;
-            let initial_basis = RuntimeStabilizerBasis::from_generators(&stabilizers);
-            // ZX conversion starts with syntax dependencies. Restore the same
-            // selected witnesses and fixing closure used by physical lowering.
-            let mut dag = zx.action_graph().clone();
-            dag.attach_readout_dependencies(&stabilizers.generators, Some(&stabilizers.zx_graph))?;
-            stabilizers
-                .prepare_analysis_readouts(&dag)
-                .map_err(
-                    |source| VerifyLogicalError::RuntimeBasisInitializationFailed { source },
-                )?;
-            let readouts = stabilizers
-                .generators
-                .into_iter()
-                .filter_map(|generator| {
-                    let name = generator.measurement_name()?.to_owned();
-                    Some((name, generator))
-                })
-                .collect();
-            (initial_basis, readouts)
+            named_readouts(&initial_basis, &records)?
         };
         if !sampled.is_empty() && !named_vars.is_empty() {
             // A free native phase can cross a named row. Compensate through the
             // same right-inverse that realizes named outcomes, so the action still
             // reads its supplied outcome after unnamed measurements are sampled.
-            for (name, generator) in &readouts {
+            for (name, readout) in &anchors {
                 let named = named_vars[name];
                 for (key, variable) in &sampled {
-                    if !stabilizer_supports_measurement(&generator.stabilizer, key) {
+                    if !stabilizer_supports_measurement(readout, key) {
                         continue;
                     }
                     for (target, parity) in named_phases {
@@ -360,7 +235,7 @@ impl InternalCorrection {
             sampled,
             initial_basis,
             named_vars: named_vars.clone(),
-            readouts,
+            records,
         })
     }
 
@@ -481,45 +356,23 @@ impl InternalCorrection {
             basis = updated;
             keys.insert(target, key);
         }
-        // Match physical readout lowering: keep the authored signed row when
-        // it needs no fills; otherwise use precisely its causal fills and
-        // accepted deadline. A fresh all-fills witness can change the label.
-        // SEM-READ reports the physical parity of these particular records:
-        // transport signs remain in the ZX tensor/closed constraints. Adding
-        // surface.sign again would invert signed readouts. The convention is
-        // anchored here, rather than assuming every equivalent witness has
-        // zero affine offset relative to the authored record.
-        let readouts = self
-            .readouts
+        // A fill moves a selective record onto its chosen native key.
+        let records = self
+            .records
             .iter()
-            .map(|(name, generator)| {
-                if let Some(plan) = generator.readout_plan()
-                    && plan.sites.iter().any(|site| !selectives.contains_key(site))
-                {
-                    return Err(VerifyLogicalError::MeasurementPhaseUnavailable(
-                        name.clone(),
-                    ));
-                }
-                Ok(generator
-                    .named_readout()
-                    .expect("named row")
-                    .select(|site| {
-                        let NodeKind::Selective(kind) =
-                            self.zx_graph().node_at(site).expect("resolve node").kind
-                        else {
-                            unreachable!("resolve target is selective")
-                        };
-                        selectives[&site] == kind.pauli_if_true()
-                    })
-                    .clone())
+            .map(|(name, key)| {
+                let key = match key {
+                    MeasurementKey::Node { pos, .. } => keys.get(pos).unwrap_or(key),
+                    MeasurementKey::Edge { .. } => key,
+                };
+                (name.clone(), key.clone())
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
+        let readouts = named_readouts(&basis, &records)?
+            .into_values()
+            .collect::<Vec<_>>();
         let phases = self.resolved_measurement_vars(&keys, &readouts)?;
-        Ok(ResolvedCorrection {
-            basis,
-            phases,
-            readouts,
-        })
+        Ok(ResolvedCorrection { basis, phases })
     }
 
     pub(super) fn apply(
@@ -534,7 +387,6 @@ impl InternalCorrection {
         let ResolvedCorrection {
             basis,
             phases: measurement_vars,
-            ..
         } = resolved;
         let measured = measurement_vars
             .iter()
@@ -633,22 +485,6 @@ impl InternalCorrection {
     }
 }
 
-fn combine_columns(columns: &[CoeffVec], selected: &CoeffVec, mut result: CoeffVec) -> CoeffVec {
-    for column in selected.iter_ones() {
-        result.xor_assign(&columns[column]);
-    }
-    result
-}
-
-fn pauli_coeffs(paulis: &crate::PauliString) -> CoeffVec {
-    let mut coefficients = CoeffVec::zeros(2 * paulis.len());
-    for (column, pauli) in paulis.iter_support() {
-        coefficients.set_bit(2 * column, pauli & Pauli::X);
-        coefficients.set_bit(2 * column + 1, pauli & Pauli::Z);
-    }
-    coefficients
-}
-
 fn kernel_directions(columns: &[CoeffVec]) -> Vec<CoeffVec> {
     let mut basis = Vec::<CoeffVec>::new();
     let mut selected = Vec::new();
@@ -688,67 +524,6 @@ fn feedback_sign(
                 odd ^ surface.paulis.get(column).anticommutes(pauli)
             })
         })
-}
-
-fn boundary_bodies(
-    basis: &RuntimeStabilizerBasis,
-    surfaces: &[crate::Stabilizer],
-    outputs: &[IVec3],
-) -> Result<(Vec<crate::PauliString>, Vec<usize>, usize), FeedbackInferenceError> {
-    let zx = basis.zx_graph();
-    let open = zx
-        .nodes()
-        .iter()
-        .filter(|node| matches!(node.kind, NodeKind::Port | NodeKind::T))
-        .collect::<Vec<_>>();
-    let width = open
-        .iter()
-        .map(|node| {
-            if node.role == crate::PortRole::Multiplex {
-                2
-            } else {
-                1
-            }
-        })
-        .sum();
-    let mut bodies = Vec::with_capacity(surfaces.len() + open.len());
-    for surface in surfaces {
-        let mut body = crate::PauliString::new(width);
-        let mut column = 0;
-        for node in &open {
-            let pauli = surface.paulis.get(node.id);
-            if node.role == crate::PortRole::Multiplex {
-                // The Z-copy isometry maps X -> X⊗X, Z -> I⊗Z and adds Z⊗Z.
-                body.set(column, if pauli & Pauli::X { Pauli::X } else { Pauli::I });
-                column += 1;
-            }
-            body.set(column, pauli);
-            column += 1;
-        }
-        bodies.push(body);
-    }
-    let mut extras = Vec::new();
-    let mut column = 0;
-    for node in open {
-        if node.role == crate::PortRole::Multiplex {
-            let output = outputs
-                .iter()
-                .position(|&position| position == node.pos)
-                .ok_or_else(|| {
-                    FeedbackInferenceError::Binding(
-                        "multiplex boundary missing from output order".into(),
-                    )
-                })?;
-            let mut body = crate::PauliString::new(width);
-            body.set(column, Pauli::Z);
-            body.set(column + 1, Pauli::Z);
-            bodies.push(body);
-            extras.push(output);
-            column += 1;
-        }
-        column += 1;
-    }
-    Ok((bodies, extras, width))
 }
 
 pub(super) fn fresh_var(next: &mut usize) -> Result<Var, VerifyLogicalError> {

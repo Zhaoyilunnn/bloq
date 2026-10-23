@@ -3,7 +3,8 @@
 //! the ten-bit adder scaling case. The three-bit adder runs at d3/d5 only;
 //! d7 retains the other gallery compositions without repeating its costly sweep.
 //!
-//! `compile_clifford_proxy` rewrites every dynamic element into a Clifford
+//! `compile_clifford_proxy` restricts the certified source relation and
+//! rewrites every dynamic element into a Clifford
 //! stand-in — T blocks become perfect MPP input ports, selective blocks are
 //! statically pinned, the action track is dropped — yielding a determined
 //! circuit the static backend emits. This measures the **composition**

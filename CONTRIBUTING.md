@@ -12,6 +12,16 @@ Describe the behavior changed and the checks used to verify it. Breaking APIs
 require coordinated changes to callers, examples, documentation, and release
 notes. Preserve each release's documentation and API reference.
 
+Do not edit `CHANGELOG.md` manually, including unreleased entries and version
+headings. Release-plz generates it in release PRs. Record release-note details
+in Conventional Commit messages and compatibility changes in `BREAKING CHANGE:`
+footers; keep migration guidance in the relevant user documentation. Notes cover
+the whole repository and group changes by Conventional Commit scope. Use
+`python`, `rust`, `editor`, `cli`, `ci`, `docs`, or `deps` to identify the affected
+area, including dependency-only fixes such as `fix(editor): ...`. Unscoped
+commits remain visible under General. See [changelog generation](docs/releasing.md#changelog).
+`just changelog` previews generated notes without writing the file.
+
 ## Issues and pull requests
 
 Use the [bug report](.github/ISSUE_TEMPLATE/bug_report.md),
@@ -33,7 +43,7 @@ contribution or have the right to submit it, and license it under this project's
 AI-assisted contributions are welcome. Review all generated code, documentation,
 issue text, and pull request text before submitting. You remain responsible for
 the contribution's correctness, security, and quality. Disclose the tool and
-model used, and how they assisted, in the issue or pull request.
+exact model identifier used, and how they assisted, in the issue or pull request.
 
 Select exactly one AI acknowledgement option in the template. If you did not use
 AI tools, select `No`; no AI disclosure details or `Assisted-by:` trailers are
@@ -47,40 +57,82 @@ the tool and model:
 Assisted-by: <tool> (<model>)
 ```
 
+Use the exact model identifier reported by the tool in both trailers and
+disclosures. A family label such as `GPT-6` is not sufficient. For example:
+
+```text
+Assisted-by: Codex (gpt-6.1-sol)
+```
+
 Keep the human contributor as the commit author; credit AI tools with
 `Assisted-by:`, rather than `Co-authored-by:`. Complete the AI contribution
 acknowledgement in the template. This policy is adapted from
 [Clifft's contribution guidelines](https://github.com/unitaryfoundation/clifft/blob/main/docs/development/contributing.md).
 
+### Model identifier retrieval
+
+Before committing or publishing AI-assisted work, retrieve exact model identifiers
+from runtime metadata. Disclose each contributing model and role, and credit it
+in the relevant commits' `Assisted-by:` trailers.
+
+For local Codex sessions:
+
+1. Find the rollout JSONL matching `CODEX_THREAD_ID` under
+   `${CODEX_HOME:-$HOME/.codex}/sessions/`.
+2. Read `payload.model` from contributing `turn_context` records; repeat for
+   other contributing chats or agents. Copy identifiers verbatim.
+
+Use equivalent runtime metadata in other environments. Never infer identifiers
+from config defaults, model lists, family names, or examples. Do not publish logs.
+
+If retrieval fails or is ambiguous, prepare the changes and report the blocker
+before committing or publishing. Never guess or publish an "unavailable" fallback.
+
+## Documentation scope
+
+Document supported behavior, APIs, usage, and reproducible benchmarks.
+Keep investigation notes and experiment reports out of the public documentation.
+
 ## Verification
 
 ```sh
+just ci-fast       # formatting, Python lint, and script tests; no project build
 just fmt-check
 just test <crate>  # clippy, nextest, and doctests; all features, locked
 just py-test      # Python bindings
 just py-lint      # Ruff: package, tests, examples, and repository tools
 just py-typecheck # mypy: Python package and generated native stubs
 just ci-python    # Python lint, types, tests, and docs, one extension build
+just ci-site      # Python docs and web editor compilation (requires the WASM target)
+just doc-test     # Rust examples embedded from the README and guides
 just ci           # all native CI suites, including MSRV and Python docs
 ```
 
 `ticit` is optimized in dev/test builds to keep physical execution checks fast.
 Debug assertions and integer overflow checks remain enabled.
 
-Keep the final `CI` check required. It gates the selected parallel suites and
-native and browser checks; manual dispatch runs all suites. Website
-publication is a separate manual workflow. See
-[Website maintenance](docs/site-maintenance.md#build-and-preview) for filtering and artifact reuse.
+PRs run quick checks automatically. Maintainers approve the full checks selected
+for the changed files; the required `CI` status passes when those checks succeed.
+Manual CI runs check every suite. For website publication, see
+[Website maintenance](docs/site-maintenance.md#publish-a-reviewed-build).
+Full website assembly runs daily or on demand. CI uses a faster Windows smoke
+build without LTO; release binaries retain the production profile. Release-only
+recipes live in `tools/release.just`, so editing them does not select native builds.
 
 Use `just test-full` for ignored or slow tests in release mode, and `just fidelity`
 for both physical Choi suites. Graph-level logical checks use QuiZX;
 non-Clifford physical execution checks belong in `bloq_vm/tests`.
+Use ideal T-source proxies for ordinary VM tests: set
+`CompileConfig::with_prepare_t_with_mpps(true)` in Rust or
+`prepare_t_with_mpps=True` in Python. Execute full cultivation circuits when
+the test specifically covers cultivation or its native factory retry protocol.
 Prose-only edits need a diff and link review; changed Rust API examples need
 doctests. Keep regression tests that protect behavior rather than private layout.
 
 Python stubs are generated from Rust annotations with `just py-stub`; do not
 edit them by hand. Build the Python reference with `just py-docs`.
-Ruff and mypy use the locked `bloq_py` development environment managed by uv.
+Ruff and mypy use locked dependencies managed by uv. Ruff runs without building
+the Python extension.
 
 ## Extending Bloq
 

@@ -23,7 +23,7 @@ use crate::{
     BlockLayout, CompileError, add_resource,
     block::{LoweringTemplateId, LoweringTemplatePool},
     compile::CompiledTemplateMap,
-    spatial_port::SpatialPortExpansionMap,
+    port::PortExpansionMap,
 };
 
 /// Compiled geometry shared by placement, flow composition, and readout resolution.
@@ -32,8 +32,8 @@ pub(crate) struct PhysicalInput<'a> {
     pub graph: &'a BlockGraph,
     pub plan: &'a LowerPlan,
     pub compiled: &'a CompiledTemplateMap,
-    pub spatial_port_templates: &'a CompiledTemplateMap,
-    pub spatial_ports: &'a SpatialPortExpansionMap,
+    pub port_templates: &'a CompiledTemplateMap,
+    pub ports: &'a PortExpansionMap,
     pub temporal_templates: &'a crate::FxMap<TemplatePlan, LoweringTemplateId>,
     pub wall_templates: &'a crate::FxMap<SpatialPipeRef, LoweringTemplateId>,
     pub template_pool: &'a LoweringTemplatePool,
@@ -84,7 +84,7 @@ impl<'a> PlacedPlan<'a> {
         let classified = classify_nodes(
             input.plan,
             input.compiled,
-            input.spatial_port_templates,
+            input.port_templates,
             input.temporal_templates,
             input.wall_templates,
         );
@@ -124,10 +124,8 @@ impl<'a> PlacedPlan<'a> {
 
     /// Emit geometry and local region checks. Ordinary lowering reserves its
     /// semantic observable range before the T regions' auxiliary readouts.
-    #[hotpath::measure]
     pub(crate) fn emit(mut self, first_observable: u32) -> Result<PhysicalProgram, CompileError> {
         let PhysicalInput {
-            graph,
             plan,
             template_pool,
             layout,
@@ -265,7 +263,6 @@ impl<'a> PlacedPlan<'a> {
             bloq.add_edge(source, target, BloqEdge::quantum(pipes));
         }
 
-        induce_walking_choreography_order_edges(graph, plan, &node_map, bloq.top_mut())?;
         // Composed detectors can read across nodes without a physical seam.
         induce_detector_order_edges(bloq.top_mut());
 
@@ -288,7 +285,7 @@ impl<'a> PlacedPlan<'a> {
         let PhysicalInput {
             graph,
             plan,
-            spatial_ports,
+            ports,
             layout,
             ..
         } = self.input;
@@ -313,8 +310,10 @@ impl<'a> PlacedPlan<'a> {
                 template_id: remapper.remap(instance.instance.template),
                 offset: instance.instance.offset,
                 provenance: match instance.site_source {
-                    ChunkSiteSource::Block(source) if spatial_ports.contains_key(&source) => {
-                        let port = spatial_ports[&source];
+                    ChunkSiteSource::Block(source)
+                        if ports.get(&source).is_some_and(|port| port.is_spatial()) =>
+                    {
+                        let port = ports[&source];
                         bloq_ir::InstanceProvenance::SpatialPortSubstitution {
                             source,
                             role: port.role,
@@ -322,11 +321,17 @@ impl<'a> PlacedPlan<'a> {
                         }
                     }
                     ChunkSiteSource::SpatialPort(source) => {
-                        let port = spatial_ports[&source];
+                        let port = ports[&source];
                         bloq_ir::InstanceProvenance::SpatialPortSubstitution {
                             source,
                             role: port.role,
                             part: bloq_ir::SpatialPortPart::TemporalPort,
+                        }
+                    }
+                    ChunkSiteSource::Block(source) if ports.contains_key(&source) => {
+                        bloq_ir::InstanceProvenance::IdealPortAdapter {
+                            source,
+                            role: ports[&source].role,
                         }
                     }
                     ChunkSiteSource::Block(source) => bloq_ir::InstanceProvenance::Block { source },
@@ -427,43 +432,6 @@ fn induce_detector_order_edges(body: &mut SubGraph) {
             body.add_edge(owner, target, BloqEdge::Order);
         }
     }
-}
-
-/// Parallel walking blocks share transit qubits. If one walk enters another
-/// walk's source cell, the latter must finish vacating it first; source order is
-/// otherwise rotation-dependent and can corrupt the merged physical schedule.
-fn induce_walking_choreography_order_edges(
-    graph: &BlockGraph,
-    plan: &LowerPlan,
-    node_map: &[Option<BloqNodeId>],
-    body: &mut SubGraph,
-) -> Result<(), CompileError> {
-    for &position in plan.node_by_block().keys() {
-        let block = graph.get_block(position).expect("planned block exists");
-        let BlockKind::Walking(kind) = block.kind() else {
-            continue;
-        };
-        let destination_source = kind.try_end_position(block.pos())? - IVec3::Z;
-        if !graph
-            .get_block(destination_source)
-            .is_some_and(|block| matches!(block.kind(), BlockKind::Walking(_)))
-        {
-            continue;
-        }
-        let Some(entering) = node_map[plan.node_by_block()[&block.pos()].index()] else {
-            continue;
-        };
-        let Some(&vacating_plan) = plan.node_by_block().get(&destination_source) else {
-            continue;
-        };
-        let Some(vacating) = node_map[vacating_plan.index()] else {
-            continue;
-        };
-        if entering != vacating {
-            body.add_edge(vacating, entering, BloqEdge::Order);
-        }
-    }
-    Ok(())
 }
 
 /// Split a tall cube's rounds across its occupied source layers. All layers on

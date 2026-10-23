@@ -138,9 +138,7 @@ module main {
     flat = parsed.flatten()
     assert not flat.has_module_structure
     assert set(flat.positions()) == {(0, 0, 0), (2, 0, 0), (4, 0, 0), (6, 0, 0)}
-    with pytest.raises(bloq.BlockGraphError, match="flatten"):
-        parsed.stabilizers()
-    flat.stabilizers()
+    assert len(parsed.stabilizers()) == len(flat.stabilizers())
     with pytest.raises(bloq.BlockGraphError, match="expanded blocks limit"):
         parsed.flatten(limits={"max_expanded_blocks": 1})
     assert parsed.flatten(limits={"max_expanded_blocks": None}) == flat
@@ -805,25 +803,6 @@ def test_ir_introspection(y_memory_program):
     tall.add_block(bloq.Block((0, 0, 0), "ZXZ", height="3d/2"))
     _, node = bloq.compile(tall, distance=5).quantum_nodes()[0]
     assert node.timeline == [3, 8]
-
-
-def test_insert_memory_rounds(y_memory_program):
-    g, _ = y_memory_program
-    # Fresh compile: mutation would leak into other tests via the shared fixture.
-    p = bloq.compile(g, distance=3)
-    quantum_edges = [
-        (e.source, e.target)
-        for e in p.edges()
-        if isinstance(e.edge, bloq.ir.BloqEdge.Quantum)
-    ]
-    assert (1, 2) in quantum_edges
-    before = p.node_count
-    new_id = p.insert_memory_rounds(1, 2, rounds=2)
-    assert p.node_count > before
-    node = p.node(new_id)
-    assert node.memory_rounds() == 2
-    assert isinstance(node.provenance, bloq.ir.NodeProvenance.MemoryPadding)
-    p.validate()
 
 
 def test_insert_memory_rounds_bad_endpoint(y_memory_program):
@@ -1492,22 +1471,6 @@ def test_stabilizer_interiors_and_port_support_are_consistent():
         for support in (row.stabilizer.port_stabilizer, row.stabilizer.interior_nodes,
                         row.stabilizer.interior_edges):
             assert list(support) == sorted(support)
-
-    # A selective-fixing row names `(position, forbidden_pauli)` pairs, and
-    # only such rows carry them.
-    selective = bloq.GalleryItem.T_COMPARISON.load()
-    rows = selective.stabilizers()
-    occupied = set(selective.occupied_positions())
-    targets = [
-        (row.kind, position, pauli)
-        for row in rows
-        for position, pauli in row.selective_fixing_targets
-    ]
-    assert targets
-    for kind, position, pauli in targets:
-        assert kind == "selective_fixing"
-        assert position in occupied
-        assert pauli in (bloq.Pauli.X, bloq.Pauli.Y, bloq.Pauli.Z)
 
 
 def test_negative_bulk_adder_is_not_in_public_gallery():

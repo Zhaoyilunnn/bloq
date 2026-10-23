@@ -5,7 +5,9 @@
 feature. Install LLVM 21's `opt-21` and `llvm-as-21` to emit; ordinary Rust builds
 and the default facade do not link LLVM or require those executables.
 
-The emitter validates task operands and RUS isolation using the VM validator.
+The QIR backend validates task references, register and qubit bounds, decoder
+bindings, and RUS isolation through its own input validator. It uses public VM
+instruction types and requires no changes to the VM runtime or its public API.
 It constructs private classical registers, promotes them to SSA with
 LLVM's `mem2reg`, verifies the module, and assembles bitcode. Both outputs use
 an `i64` entry point, static resources, declared integer/loop/return capabilities,

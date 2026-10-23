@@ -1,5 +1,8 @@
 //! One guarded readout DAG shared by selectors, feedback, and terminal frames.
 
+#[path = "readouts/emission.rs"]
+mod emission;
+
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -20,10 +23,23 @@ use super::physical::{GuardedDynamicAnchors, PhysicalProjection};
 use crate::block::LoweringTemplateId;
 use crate::lower::ChunkSiteSource;
 use crate::{BlockLayout, CompileError, FxMap as HashMap, check_resource};
+use emission::{Input, ReadoutEmission};
 
-type MeasurementCache = HashMap<(ParityPacket, DecisionId), BloqNodeId>;
-type BoundaryCache = HashMap<(InstanceBoundaryOperator, DecisionId), BloqNodeId>;
+// Emitted predicates keep their decision roots live in BooleanProgram::values.
+// Their IR identities survive collection; None denotes an unconditional value.
+type MeasurementCache = HashMap<(ParityPacket, Option<BloqNodeId>), Input>;
+type BoundaryCache = HashMap<(InstanceBoundaryOperator, Option<BloqNodeId>), BloqNodeId>;
 type PendingPackets = BTreeMap<TemplateInstanceId, HashMap<ParityPacket, DecisionId>>;
+
+// Bound reclamation headroom separately from the caller's witness quota.
+const READOUT_COLLECTION_TARGET: usize = 1_000_000;
+
+fn next_readout_collection(retained: usize, limit: usize) -> usize {
+    let floor = (limit.min(READOUT_COLLECTION_TARGET) / 4).max(1);
+    let growth = (READOUT_COLLECTION_TARGET / 4).max(retained / 4);
+    let headroom = (limit.saturating_sub(retained) / 4).min(growth);
+    retained.saturating_add(headroom).max(floor)
+}
 
 /// An exact, sorted parity belonging to one instance. Reusing a packet hashes
 /// only its fingerprint; equality still compares content after hash collisions.
@@ -176,7 +192,6 @@ thread_local! {
     static BINDING_CACHE_HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[hotpath::measure]
 pub(super) fn lower(
     plan: &mut GuardedReadoutPlan,
     profiles: &mut [Profile],
@@ -184,8 +199,9 @@ pub(super) fn lower(
     boolean: &mut BooleanProgram,
     distance: u32,
     anchors: &mut GuardedDynamicAnchors,
-    witness_limit: usize,
+    context: &crate::CompileContext,
 ) -> Result<(), CompileError> {
+    let witness_limit = context.config.certification_limits().max_witness_nodes;
     check_resource("readout IDs", plan.surfaces.len(), u32::MAX as usize)?;
     let mut profiles_at = HashMap::<_, Vec<_>>::default();
     for (index, profile) in profiles.iter().enumerate() {
@@ -205,6 +221,7 @@ pub(super) fn lower(
         })
         .collect::<HashMap<_, _>>();
     let mut accumulates = MeasurementCache::default();
+    let mut emission = ReadoutEmission::default();
     let mut includes = BoundaryCache::default();
     let mut bindings = HashMap::<LocalBindingKey, Arc<LocalBinding>>::default();
     let mut binding_terms = 0usize;
@@ -238,8 +255,7 @@ pub(super) fn lower(
     for (surface, consumer) in last_use.into_iter().enumerate() {
         releases[consumer].push(surface);
     }
-    let collection_floor = (witness_limit / 4).max(1);
-    let mut next_collection = collection_floor;
+    let mut next_collection = next_readout_collection(0, witness_limit);
     for (index, finished_queries) in releases.into_iter().enumerate() {
         // Named values and terminal frames compare the same source instrument.
         // Removing H/Y transport here would change that instrument's branch.
@@ -311,8 +327,6 @@ pub(super) fn lower(
                             anchors,
                             assembly,
                             boolean,
-                            &mut accumulates,
-                            &mut includes,
                             packets
                                 .values_mut()
                                 .flat_map(HashMap::values_mut)
@@ -328,17 +342,15 @@ pub(super) fn lower(
                             retained,
                             witness_limit,
                         )?;
-                        next_collection = retained
-                            .saturating_add(witness_limit.saturating_sub(retained) / 4)
-                            .max(collection_floor);
+                        next_collection = next_readout_collection(retained, witness_limit);
                     }
                     let profile = &profiles[profile_index];
                     let physical = &profile.projection.physical;
                     let context = crate::lower::LocalSurfaceContext {
                         graph: &physical.geometry.graph,
                         compiled: &physical.compiled,
-                        spatial_ports: &physical.geometry.spatial_ports,
-                        spatial_templates: &physical.spatial_templates,
+                        ports: &physical.geometry.ports,
+                        port_templates: &physical.port_templates,
                         wall_templates: &physical.wall_templates,
                         pipe_templates: &physical.pipe_templates,
                         pool: &physical.pool,
@@ -346,10 +358,7 @@ pub(super) fn lower(
                         selectives: &profile.projection.selectives,
                         layout: BlockLayout::new(distance),
                     };
-                    for case in hotpath::measure_block!(
-                        "readouts.local_cases",
-                        plan.local_cases(representative, profile.position, profile.guard)
-                    )? {
+                    for case in plan.local_cases(representative, profile.position, profile.guard)? {
                         let alternatives =
                             if context.needs_dynamic_anchor(profile.position, &case.surface) {
                                 anchors
@@ -551,8 +560,6 @@ pub(super) fn lower(
                 anchors,
                 assembly,
                 boolean,
-                &mut accumulates,
-                &mut includes,
                 packets
                     .values_mut()
                     .flat_map(HashMap::values_mut)
@@ -565,9 +572,7 @@ pub(super) fn lower(
                 retained,
                 witness_limit,
             )?;
-            next_collection = retained
-                .saturating_add(witness_limit.saturating_sub(retained) / 4)
-                .max(collection_floor);
+            next_collection = next_readout_collection(retained, witness_limit);
         }
         let mut values = emit_accumulates(
             packets,
@@ -575,9 +580,10 @@ pub(super) fn lower(
             &mut plan.topology,
             assembly,
             boolean,
+            &mut emission,
         )?;
         let mut operators = operators.into_iter().collect::<Vec<_>>();
-        operators.sort_by_key(|(operator, guard)| {
+        operators.sort_by_cached_key(|(operator, guard)| {
             (
                 operator.instance.0,
                 format!("{:?}", operator.face),
@@ -593,8 +599,11 @@ pub(super) fn lower(
             if guard == ZERO {
                 continue;
             }
-            let key = (operator.clone(), guard);
-            let node = if let Some(&node) = includes.get(&key) {
+            let predicate = emitted_predicate(boolean, guard);
+            let mut key = (operator, predicate.flatten());
+            let node = if predicate.is_some()
+                && let Some(&node) = includes.get(&key)
+            {
                 node
             } else {
                 let node = emit_guarded_value(
@@ -602,8 +611,10 @@ pub(super) fn lower(
                     boolean,
                     &plan.topology,
                     guard,
-                    ClassicalNode::observable_fragment(vec![], vec![operator.clone()]),
+                    ClassicalNode::observable_fragment(vec![], vec![key.0.clone()]),
                 );
+                key.1 = emitted_predicate(boolean, guard).expect("guard was emitted");
+                let operator = &key.0;
                 if operator.face == bloq_ir::BoundaryFace::Output {
                     assembly.bloq.add_edge(
                         assembly.owners[&operator.instance],
@@ -614,13 +625,13 @@ pub(super) fn lower(
                 includes.insert(key, node);
                 node
             };
-            values.push((node, ValueRole::Data));
+            values.push((node.into(), ValueRole::Data));
         }
         let kind = plan.surfaces[index].kind.clone();
         let feedbacks = plan.surfaces[index].feedbacks.clone();
         for (ordinal, guard) in feedbacks {
             let node = boolean.emit(guard, &plan.topology.diagram, &mut assembly.bloq);
-            values.push((node, ValueRole::FeedbackFold { action: ordinal }));
+            values.push((node.into(), ValueRole::FeedbackFold { action: ordinal }));
         }
         match kind {
             GuardedSurfaceKind::Readout { name, folds } => {
@@ -628,11 +639,13 @@ pub(super) fn lower(
                     let value = plan.topology.condition(&Expr::Var(predecessor));
                     let value = plan.topology.diagram.apply(BooleanOp::And, guard, value)?;
                     values.push((
-                        boolean.emit(value, &plan.topology.diagram, &mut assembly.bloq),
+                        boolean
+                            .emit(value, &plan.topology.diagram, &mut assembly.bloq)
+                            .into(),
                         ValueRole::ReadoutFold,
                     ));
                 }
-                let observable = emit_readout(assembly, values)?;
+                let observable = emission.readout(assembly, values)?;
                 let ordinal = named_actions[name.as_str()];
                 assembly
                     .bloq
@@ -643,7 +656,7 @@ pub(super) fn lower(
             }
             GuardedSurfaceKind::OutputFrame { port, basis, .. } => {
                 let inputs = if plan.surfaces[index].activation() != ZERO {
-                    let observable = emit_readout(assembly, values)?;
+                    let observable = emission.readout(assembly, values)?;
                     // The complete observable already supplies the corrected
                     // physical parity of this frame equation.
                     vec![observable]
@@ -677,11 +690,13 @@ pub(super) fn lower(
             GuardedSurfaceKind::LogicalReadout => {
                 if reference_offset != ZERO {
                     values.push((
-                        boolean.emit(reference_offset, &plan.topology.diagram, &mut assembly.bloq),
+                        boolean
+                            .emit(reference_offset, &plan.topology.diagram, &mut assembly.bloq)
+                            .into(),
                         ValueRole::Data,
                     ));
                 }
-                emit_readout(assembly, values)?;
+                emission.readout(assembly, values)?;
             }
         }
         #[cfg(test)]
@@ -694,6 +709,9 @@ pub(super) fn lower(
             }
         }
     }
+    // Pending leaves own the packet references they still need. Release lookup
+    // keys and binding images before allocating final concatenated payloads.
+    drop((accumulates, includes, bindings, fragments));
     // Each physical equation retains its own raw/corrected decoder pair.
     // Back-substitute output dependencies as shared classical values instead
     // of expanding their physical witnesses into every preceding equation.
@@ -755,25 +773,20 @@ pub(super) fn lower(
             assembly.bloq.add_edge(value, discard, BloqEdge::value(0));
         }
     }
+    context.check_cancellation()?;
+    emission.finish(&mut assembly.bloq)?;
     boolean.bind(&plan.topology, &readouts, &mut assembly.bloq)?;
     Ok(())
 }
 
-/// The physical readout stage owns every decision handle below. Hash keys must
-/// leave their maps during remapping; IR node/instance identities do not change.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "all remapped owners must move through one garbage-collection boundary"
-)]
-#[hotpath::measure]
+/// The physical readout stage owns every decision handle below. Emitted-predicate
+/// cache keys are stable IR identities; their guards already live in `values`.
 fn collect_boolean_garbage<'a>(
     plan: &mut GuardedReadoutPlan,
     profiles: &mut [Profile],
     anchors: &mut GuardedDynamicAnchors,
     assembly: &mut Assembly,
     boolean: &mut BooleanProgram,
-    accumulates: &mut MeasurementCache,
-    includes: &mut BoundaryCache,
     pending: impl Iterator<Item = &'a mut DecisionId>,
 ) -> Result<(), CompileError> {
     #[cfg(test)]
@@ -787,8 +800,6 @@ fn collect_boolean_garbage<'a>(
     let copied_roots = boolean
         .values
         .len()
-        .saturating_add(accumulates.len())
-        .saturating_add(includes.len())
         .saturating_add(profiles.len())
         .saturating_add(anchors.decisions_mut().count())
         .saturating_add(assembly.decisions_mut().count());
@@ -799,22 +810,16 @@ fn collect_boolean_garbage<'a>(
     let mut values = std::mem::take(&mut boolean.values)
         .into_iter()
         .collect::<Vec<_>>();
-    let mut accumulates_owned = std::mem::take(accumulates).into_iter().collect::<Vec<_>>();
-    let mut includes_owned = std::mem::take(includes).into_iter().collect::<Vec<_>>();
     plan.collect_garbage(
         values
             .iter_mut()
             .map(|(guard, _)| guard)
-            .chain(accumulates_owned.iter_mut().map(|((_, guard), _)| guard))
-            .chain(includes_owned.iter_mut().map(|((_, guard), _)| guard))
             .chain(profiles.iter_mut().map(|profile| &mut profile.guard))
             .chain(anchors.decisions_mut())
             .chain(assembly.decisions_mut())
             .chain(pending.iter_mut().map(|guard| &mut **guard)),
     );
     boolean.values = values.into_iter().collect();
-    *accumulates = accumulates_owned.into_iter().collect();
-    *includes = includes_owned.into_iter().collect();
     Ok(())
 }
 
@@ -876,30 +881,29 @@ fn normalize_packets(
 }
 
 // Share each instance's exact, fully cancelled physical parity across readouts.
-#[hotpath::measure]
 fn emit_accumulates(
     packets: PendingPackets,
     accumulates: &mut MeasurementCache,
     topology: &mut bloq_graph::GuardedTopology,
     assembly: &mut Assembly,
     boolean: &mut BooleanProgram,
-) -> Result<Vec<(BloqNodeId, ValueRole)>, CompileError> {
+    emission: &mut ReadoutEmission,
+) -> Result<Vec<(Input, ValueRole)>, CompileError> {
     let mut values = Vec::new();
     for (packet, guard) in normalize_packets(packets, topology)? {
-        let key = (packet, guard);
-        let node = if let Some(&node) = accumulates.get(&key) {
+        let predicate = emitted_predicate(boolean, guard);
+        let mut key = (packet, predicate.flatten());
+        // An unseen guard cannot hit. Charge the payload and request its guard
+        // at the original cache miss, before any later query can emit guards.
+        let cached = predicate.and_then(|_| accumulates.get(&key).copied());
+        let node = if let Some(node) = cached {
             node
         } else {
             topology.diagram.charge(key.0.records.len())?;
-            let node = emit_guarded_value(
-                assembly,
-                boolean,
-                topology,
-                guard,
-                ClassicalNode::observable_fragment(key.0.records.to_vec(), vec![]),
-            );
             let owner = assembly.owners[&key.0.instance()];
-            assembly.bloq.add_edge(owner, node, BloqEdge::Order);
+            let node =
+                emission.measurement(assembly, boolean, topology, guard, &key.0.records, owner)?;
+            key.1 = emitted_predicate(boolean, guard).expect("guard was emitted");
             accumulates.insert(key, node);
             node
         };
@@ -908,33 +912,13 @@ fn emit_accumulates(
     Ok(values)
 }
 
-pub(super) fn emit_readout(
-    assembly: &mut Assembly,
-    values: Vec<(BloqNodeId, ValueRole)>,
-) -> Result<BloqNodeId, CompileError> {
-    check_resource("readout input slots", values.len(), u32::MAX as usize)?;
-    let index = assembly.allocate_observable()?;
-    let observable = assembly.bloq.add_node(
-        BloqNode::classical(ClassicalNode::observable(index))
-            .with_provenance(NodeProvenance::Generator { ordinal: index }),
-    );
-    for (slot, (producer, role)) in values.into_iter().enumerate() {
-        let edge = if role == ValueRole::Data
-            && matches!(
-                assembly.bloq[producer].try_classical(),
-                Some(ClassicalNode::Observable { index: None, .. })
-            ) {
-            BloqEdge::compose(slot as u32)
-        } else {
-            BloqEdge::Value {
-                slot: slot as u32,
-                role,
-                output: Default::default(),
-            }
-        };
-        assembly.bloq.add_edge(producer, observable, edge);
+/// Cache predicate for an already emitted guard; `None` means it cannot hit yet.
+fn emitted_predicate(boolean: &BooleanProgram, guard: DecisionId) -> Option<Option<BloqNodeId>> {
+    if guard == ONE {
+        Some(None)
+    } else {
+        boolean.values.get(&guard).copied().map(Some)
     }
-    Ok(observable)
 }
 
 fn emit_guarded_value(
@@ -972,10 +956,14 @@ mod tests {
             ValueRole::FeedbackFold { action: 0 },
         ] {
             let mut assembly = Assembly::new();
+            let mut emission = ReadoutEmission::default();
             let fragment = assembly
                 .bloq
                 .add_node(BloqNode::classical(ClassicalNode::fragment()));
-            let observable = emit_readout(&mut assembly, vec![(fragment, role.clone())]).unwrap();
+            let observable = emission
+                .readout(&mut assembly, vec![(fragment.into(), role.clone())])
+                .unwrap();
+            emission.finish(&mut assembly.bloq).unwrap();
             assembly.bloq.validate().unwrap();
             let input = assembly.bloq.value_inputs(observable).next().unwrap();
             assert_eq!(*input.role, role);
@@ -986,15 +974,16 @@ mod tests {
     #[test]
     fn exhausted_observable_ids_fail_before_readout_emission() {
         let mut assembly = Assembly::new();
+        let mut emission = ReadoutEmission::default();
         assembly.next_observable = u32::MAX - 1;
-        let observable = emit_readout(&mut assembly, Vec::new()).unwrap();
+        let observable = emission.readout(&mut assembly, Vec::new()).unwrap();
         assert!(matches!(
             assembly.bloq[observable].try_classical(),
             Some(ClassicalNode::Observable { index, .. }) if *index == Some(u32::MAX - 1)
         ));
         let nodes = assembly.bloq.node_count();
         assert!(matches!(
-            emit_readout(&mut assembly, Vec::new()),
+            emission.readout(&mut assembly, Vec::new()),
             Err(CompileError::BooleanResource(error))
                 if error.resource == "observable IDs" && error.limit == u32::MAX as usize
         ));
@@ -1063,27 +1052,123 @@ mod tests {
     }
 
     #[test]
-    fn t_gate_merges_each_measurement_branch_into_one_fragment() {
+    fn t_gate_readout_branches_retain_measurements_and_boundary_operators() {
+        use bloq_ir::ClassicalAssignment;
+
         let program = crate::compile(&bloq_graph::GalleryItem::T.build(), 3).unwrap();
         program.validate().unwrap();
-        let fragments = program
-            .top()
-            .nodes()
-            .filter(|(_, node)| {
+        let (selective, _) = program
+            .quantum_nodes()
+            .find(|(_, quantum)| quantum.instances.len() == 2 && !quantum.guards.is_empty())
+            .expect("T gate has a selective measurement");
+        let input_value = |node, slot, assignment| {
+            let input = program
+                .value_inputs(node)
+                .find(|input| input.slot == slot)
+                .unwrap();
+            program
+                .classical_ref_value(input.value_ref().unwrap(), assignment)
+                .unwrap()
+        };
+        let arms = [false, true].map(|control| {
+            let assignment = ClassicalAssignment::Uniform(control);
+            let selected = program[selective]
+                .select_quantum_members(|slot| Some(input_value(selective, slot, assignment)))
+                .unwrap();
+            assert_eq!(selected.expect_quantum().instances.len(), 1);
+            selected.expect_quantum().instances[0].id
+        });
+        assert_ne!(
+            arms[0], arms[1],
+            "the selector chooses distinct physical arms"
+        );
+        let mut boundary_bases = std::collections::BTreeSet::new();
+        for control in [false, true] {
+            let assignment = ClassicalAssignment::Uniform(control);
+            let active_arm = arms[usize::from(control)];
+            let inactive_arm = arms[usize::from(!control)];
+            let mut readouts = 0;
+            for (observable, _) in program.nodes().filter(|(_, node)| {
                 matches!(
                     node.try_classical(),
-                    Some(ClassicalNode::Observable { index: None, .. })
+                    Some(ClassicalNode::Observable { index: Some(_), .. })
                 )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(fragments.len(), 2, "one fragment per X/Y branch");
-        for (id, node) in fragments {
-            let recipe = node.try_classical().unwrap();
-            assert!(!recipe.measurements().is_empty());
-            assert!(!recipe.operators().is_empty());
-            assert!(node.activation.is_some());
-            assert_eq!(program.top().compose_consumers(id).count(), 1);
+            }) {
+                let records = program
+                    .measurement_dependencies(observable, assignment)
+                    .unwrap();
+                assert!(
+                    !records.iter().any(|record| record.instance == inactive_arm),
+                    "no readout may access the unselected measurement arm"
+                );
+                if !records.iter().any(|record| record.instance == active_arm) {
+                    continue;
+                }
+                readouts += 1;
+                let mut pending = vec![(observable, false)];
+                let mut branch_records = std::collections::BTreeSet::new();
+                let mut operators = Vec::new();
+                while let Some((id, mut conditional)) = pending.pop() {
+                    let node = &program[id];
+                    if let Some(slot) = node.activation {
+                        if !input_value(id, slot, assignment) {
+                            continue;
+                        }
+                        conditional = true;
+                    }
+                    if conditional {
+                        let recipe = node
+                            .try_classical()
+                            .expect("Compose producer is observable");
+                        branch_records.extend(recipe.measurements().iter().copied());
+                        operators.extend(recipe.operators());
+                    }
+                    // Shared unconditional recipes may lead to activated leaves,
+                    // so inspect every Compose occurrence rather than one level.
+                    pending.extend(
+                        program
+                            .top()
+                            .data_inputs(id)
+                            .filter(|input| input.output.is_none())
+                            .map(|input| (input.producer, conditional)),
+                    );
+                }
+                assert!(
+                    branch_records
+                        .iter()
+                        .any(|record| record.instance == active_arm)
+                );
+                assert!(
+                    !operators.is_empty(),
+                    "selected readout retains its boundary contribution"
+                );
+                assert!(
+                    operators
+                        .iter()
+                        .all(|operator| operator.face == bloq_ir::BoundaryFace::Input)
+                );
+                let bases = operators
+                    .iter()
+                    .flat_map(|operator| operator.operator.iter().map(|(_, basis)| *basis))
+                    .collect::<Vec<_>>();
+                boundary_bases.insert(
+                    if bases.iter().all(|&basis| basis == bloq_circuit::Pauli::X) {
+                        "X"
+                    } else {
+                        assert!(
+                            bases.contains(&bloq_circuit::Pauli::Y),
+                            "other branch retains its logical Y operator"
+                        );
+                        "Y"
+                    },
+                );
+            }
+            assert_eq!(
+                readouts, 1,
+                "one complete observable reads the selected arm"
+            );
         }
+        assert_eq!(boundary_bases, ["X", "Y"].into_iter().collect());
     }
 
     #[test]
@@ -1233,6 +1318,7 @@ mod tests {
             }));
         let mut boolean = assembly.build(&mut topology).unwrap();
         let mut cache = HashMap::default();
+        let mut emission = ReadoutEmission::default();
         let record = |instance, measurement| InstanceMeasurement {
             instance: TemplateInstanceId(instance),
             measurement,
@@ -1254,11 +1340,13 @@ mod tests {
                 &mut topology,
                 &mut assembly,
                 &mut boolean,
+                &mut emission,
             )
             .unwrap();
-            values.push((enabled, ValueRole::ReadoutFold));
-            observables.push(emit_readout(&mut assembly, values).unwrap());
+            values.push((enabled.into(), ValueRole::ReadoutFold));
+            observables.push(emission.readout(&mut assembly, values).unwrap());
         }
+        emission.finish(&mut assembly.bloq).unwrap();
         boolean
             .bind(
                 &topology,

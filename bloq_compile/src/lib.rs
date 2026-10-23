@@ -14,8 +14,8 @@ mod config;
 mod error;
 mod lower;
 mod padding;
+mod port;
 mod signature;
-mod spatial_port;
 
 pub(crate) type FxMap<K, V> = rustc_hash::FxHashMap<K, V>;
 pub(crate) type FxSet<T> = rustc_hash::FxHashSet<T>;
@@ -76,9 +76,9 @@ pub use cache::SharedCompileCache;
 pub(crate) use compile::BlockLayout;
 pub use compile::{
     CLIFFORD_PROXY_SEED_METADATA_KEY, CODE_DISTANCE_METADATA_KEY, CONVENTION_METADATA_KEY,
-    CompileArtifacts, CompileContext, CompileStage, CompiledObject, compile,
-    compile_clifford_proxy, compile_detslice_proxy, compile_random_clifford_proxy, compile_with,
-    compiled_distance,
+    CompileArtifacts, CompileContext, CompileStage, CompiledObject, clear_clifford_proxy_cache,
+    compile, compile_clifford_proxy, compile_detslice_proxy, compile_random_clifford_proxy,
+    compile_with, compiled_distance,
 };
 pub use config::{CompileConfig, MAX_CODE_DISTANCE, spatial_hadamard_distance_warning};
 pub use error::{CompileError, InvalidDistance, WalkError};

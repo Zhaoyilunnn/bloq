@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use bloq_graph::{Basis, BlockGraph, Pipe, UDirection};
+use bloq_graph::{Basis, BlockGraph, BlockKind, Pipe, UDirection, WalkingKind};
 use glam::IVec3;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -9,7 +9,7 @@ use petgraph::visit::EdgeRef;
 
 use bloq_ir::{NodeProvenance, SourceBlockRef, TemporalPipeRef};
 
-use crate::spatial_port::{SpatialPortExpansion, SpatialPortExpansionMap};
+use crate::port::{PortExpansion, PortExpansionMap};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LowerPlan {
@@ -25,8 +25,9 @@ pub(crate) struct LowerPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct LinkedPlanInput {
     blocks: Vec<IVec3>,
+    walking: crate::FxMap<IVec3, WalkingKind>,
     pipes: Vec<LinkedPipePlan>,
-    spatial_ports: Vec<SpatialPortExpansion>,
+    ports: Vec<PortExpansion>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +40,7 @@ struct LinkedPipePlan {
 #[derive(Debug, Clone)]
 pub(crate) struct NodePlan {
     pub(crate) layer: i64,
-    /// Whether the complete spatial component has an incoming quantum cut.
+    /// Whether the complete block component has an incoming quantum cut.
     /// Local physical contexts retain this global timeline fact explicitly.
     pub(crate) incoming_cut: bool,
     pub(crate) provenance: NodeProvenance,
@@ -99,7 +100,7 @@ impl SpatialPipeRef {
 #[derive(Debug, Clone)]
 pub(crate) struct EdgePlan {
     pub(crate) pipes: Vec<TemporalPipeRef>,
-    pub(crate) spatial_ports: Vec<SpatialPortExpansion>,
+    pub(crate) ports: Vec<PortExpansion>,
 }
 
 impl EdgePlan {
@@ -107,7 +108,7 @@ impl EdgePlan {
         self.pipes
             .iter()
             .copied()
-            .chain(self.spatial_ports.iter().map(|port| TemporalPipeRef {
+            .chain(self.ports.iter().map(|port| TemporalPipeRef {
                 // Both virtual halves share the authored spatial Port.
                 src: port.source,
                 dst: port.source,
@@ -119,7 +120,7 @@ impl EdgePlan {
 impl LinkedPlanInput {
     pub(crate) fn from_module_graph(
         source: &BlockGraph,
-        spatial_ports: &SpatialPortExpansionMap,
+        ports: &PortExpansionMap,
         linked_positions: impl IntoIterator<Item = IVec3>,
     ) -> Self {
         let linked_positions = linked_positions.into_iter().collect::<crate::FxSet<_>>();
@@ -171,18 +172,26 @@ impl LinkedPlanInput {
             };
             (left.to_array(), right.to_array(), record.pipe.is_hadamard())
         });
-        let mut spatial_ports = spatial_ports
+        let mut ports = ports
             .values()
-            .filter(|port| linked_positions.contains(&port.source))
+            .filter(|port| port.is_spatial() && linked_positions.contains(&port.source))
             .copied()
             .collect::<Vec<_>>();
-        spatial_ports.sort_unstable_by_key(|port| port.source.to_array());
+        ports.sort_unstable_by_key(|port| port.source.to_array());
         let mut blocks = linked_positions.into_iter().collect::<Vec<_>>();
         blocks.sort_unstable_by_key(glam::IVec3::to_array);
+        let walking = blocks
+            .iter()
+            .filter_map(|&position| match source.get_block(position)?.kind() {
+                BlockKind::Walking(kind) => Some((position, kind)),
+                _ => None,
+            })
+            .collect();
         Self {
             blocks,
+            walking,
             pipes,
-            spatial_ports,
+            ports,
         }
     }
 
@@ -206,7 +215,7 @@ impl LowerPlan {
     pub(crate) fn from_block_graph(source: &BlockGraph) -> Self {
         let input = LinkedPlanInput::from_module_graph(
             source,
-            &SpatialPortExpansionMap::default(),
+            &PortExpansionMap::default(),
             source.blocks().map(bloq_graph::Block::pos),
         );
         Self::from_linked_input(&input)
@@ -240,7 +249,7 @@ impl LowerPlan {
                 .get(&layer)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            for component in spatial_components(&block_positions, spatial_pipes) {
+            for component in block_components(&block_positions, spatial_pipes, &source.walking) {
                 let members = component
                     .iter()
                     .copied()
@@ -304,7 +313,7 @@ impl LowerPlan {
                     pipe_node,
                     EdgePlan {
                         pipes: vec![pipe_ref],
-                        spatial_ports: Vec::new(),
+                        ports: Vec::new(),
                     },
                 );
                 graph.add_edge(
@@ -312,7 +321,7 @@ impl LowerPlan {
                     plan_target,
                     EdgePlan {
                         pipes: vec![pipe_ref],
-                        spatial_ports: Vec::new(),
+                        ports: Vec::new(),
                     },
                 );
                 continue;
@@ -330,17 +339,17 @@ impl LowerPlan {
                     plan_target,
                     EdgePlan {
                         pipes: vec![pipe_ref],
-                        spatial_ports: Vec::new(),
+                        ports: Vec::new(),
                     },
                 );
                 edge_by_endpoints.insert((plan_source, plan_target), edge);
             }
         }
 
-        for &port in &source.spatial_ports {
+        for &port in &source.ports {
             let cube = node_by_block[&port.source];
             let virtual_port = graph.add_node(NodePlan {
-                layer: 2 * i64::from(port.source.z) + if port.is_input() { -1 } else { 1 },
+                layer: 2 * i64::from(port.source.z) + if port.has_future_pipe() { -1 } else { 1 },
                 incoming_cut: false,
                 provenance: NodeProvenance::SpatialPortSubstitution {
                     source: port.source,
@@ -350,7 +359,7 @@ impl LowerPlan {
                 walls: Vec::new(),
             });
             node_by_spatial_port.insert(port.source, virtual_port);
-            let (source, target) = if port.is_input() {
+            let (source, target) = if port.has_future_pipe() {
                 (virtual_port, cube)
             } else {
                 (cube, virtual_port)
@@ -360,7 +369,7 @@ impl LowerPlan {
                 target,
                 EdgePlan {
                     pipes: Vec::new(),
-                    spatial_ports: vec![port],
+                    ports: vec![port],
                 },
             );
         }
@@ -485,7 +494,11 @@ fn temporal_edge_endpoints(
     }
 }
 
-fn spatial_components(block_positions: &[IVec3], spatial_pipes: &[&Pipe]) -> Vec<Vec<IVec3>> {
+fn block_components(
+    block_positions: &[IVec3],
+    spatial_pipes: &[&Pipe],
+    walking: &crate::FxMap<IVec3, WalkingKind>,
+) -> Vec<Vec<IVec3>> {
     let position_index: crate::FxMap<IVec3, usize> = block_positions
         .iter()
         .copied()
@@ -500,6 +513,27 @@ fn spatial_components(block_positions: &[IVec3], spatial_pipes: &[&Pipe]) -> Vec
             (position_index.get(&src), position_index.get(&dst))
         {
             components.union(src_index, dst_index);
+        }
+    }
+
+    // Parallel walks share transit qubits and therefore one set of common rounds.
+    for (index, &position) in block_positions.iter().enumerate() {
+        let Some(kind) = walking.get(&position) else {
+            continue;
+        };
+        for offset in kind
+            .reserved_offsets()
+            .into_iter()
+            .filter(|offset| offset.z == 0 && *offset != IVec3::ZERO)
+        {
+            if let Ok(neighbor) = bloq_graph::checked_add_position(position, offset)
+                && walking
+                    .get(&neighbor)
+                    .is_some_and(|other| other.movement() == kind.movement())
+                && let Some(&neighbor_index) = position_index.get(&neighbor)
+            {
+                components.union(index, neighbor_index);
+            }
         }
     }
 
@@ -552,9 +586,7 @@ fn temporal_hadamard_top_basis(graph: &BlockGraph, pipe: &TemporalPipeRef) -> Ba
 
 #[cfg(test)]
 mod tests {
-    use bloq_graph::{
-        Block, BlockKind, CubeKind, Direction, PatchRotationKind, WalkingBoundaryKind, WalkingKind,
-    };
+    use bloq_graph::{Block, CubeKind, Direction, PatchRotationKind, WalkingBoundaryKind};
     use glam::ivec3;
 
     use super::*;
@@ -573,7 +605,7 @@ mod tests {
 
         let input = LinkedPlanInput::from_module_graph(
             &graph,
-            &SpatialPortExpansionMap::default(),
+            &PortExpansionMap::default(),
             [kept, upper, kept],
         );
         assert_eq!(input.pipes.len(), 1);
@@ -631,6 +663,7 @@ mod tests {
         };
         let input = LinkedPlanInput {
             blocks: [0, 1, 2, 3, 10, 11].map(|x| ivec3(x, 0, 0)).to_vec(),
+            walking: crate::FxMap::default(),
             pipes: vec![
                 h(2, (ivec3(2, 0, 0), ivec3(3, 0, 0))),
                 h(10, (ivec3(10, 0, 0), ivec3(11, 0, 0))),
@@ -640,7 +673,7 @@ mod tests {
                 h(1, (ivec3(1, 0, 0), ivec3(2, 0, 0))),
                 h(0, (ivec3(0, 0, 0), ivec3(1, 0, 0))),
             ],
-            spatial_ports: Vec::new(),
+            ports: Vec::new(),
         };
         let plan = LowerPlan::from_linked_input(&input);
         let first = plan.node_by_block()[&ivec3(0, 0, 0)];

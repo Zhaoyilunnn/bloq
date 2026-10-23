@@ -33,7 +33,7 @@ use crate::block::{CompiledTemplate, LoweringTemplate};
 use crate::signature::{Connectivity, LayerSchedule};
 
 pub(crate) use compiler::{compile_fixed_bulk, validate_fixed_bulk};
-pub(crate) use port::compile_multiplex_port;
+pub(crate) use port::{compile_bell_port, compile_multiplex_port};
 pub(crate) use realignment::compile_realignment;
 pub(crate) use selective::{SelectiveTemplates, compile_measurement, compile_selective};
 pub(crate) use spatial_hadamard::{SpatialHadamardKey, WallSide, compile_spatial_hadamard};
@@ -369,45 +369,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_compile_cube_d3_zxz_has_no_bulk_loop() {
-        // `height=d` at d3 gives `d − 2 = 1` bulk round, so the loop flattens away
-        // and the schedule is three single chunks.
-        let template = compile_fixture(CubeKind::ZXZ, Connectivity::ISOLATED, 3);
-        assert_eq!(loop_repetitions(&template), None);
-        assert!(template.program_template.repeat_states.is_empty());
-    }
-
-    #[test]
-    fn test_compile_cube_d5_zxz_loop_repetitions() {
-        let template = compile_fixture(CubeKind::ZXZ, Connectivity::ISOLATED, 5);
-        assert_eq!(loop_repetitions(&template), Some(3));
-    }
-
-    #[test]
-    fn test_compile_cube_bulk_loop_follows_the_resolved_round_count() {
-        // `height=2d` at d5 is 10 rounds, so 8 bulk repetitions...
-        let tall = compile_cube(
+    #[rstest]
+    #[case(3, 3, None)]
+    #[case(5, 5, Some(3))]
+    #[case(5, 10, Some(8))]
+    #[case(5, 3, None)]
+    fn test_compile_cube_bulk_loop_follows_the_resolved_round_count(
+        #[case] distance: u32,
+        #[case] rounds: u32,
+        #[case] repetitions: Option<u32>,
+    ) {
+        let template = compile_cube(
             CubeKind::ZXZ,
             Connectivity::ISOLATED,
-            5,
-            10,
+            distance,
+            rounds,
             LayerSchedule::Compact,
         )
-        .expect("tall cube compiles");
-        assert_eq!(loop_repetitions(&tall), Some(8));
-
-        // ...while `height=d/2` at d5 is 3 rounds, so a single bulk repetition,
-        // which flattens the loop away. Same one-cell footprint, shorter circuit.
-        let half = compile_cube(
-            CubeKind::ZXZ,
-            Connectivity::ISOLATED,
-            5,
-            3,
-            LayerSchedule::Compact,
-        )
-        .expect("half-height cube compiles");
-        assert_eq!(loop_repetitions(&half), None);
+        .expect("cube compiles");
+        assert_eq!(loop_repetitions(&template), repetitions);
+        if repetitions.is_none() {
+            assert!(template.program_template.repeat_states.is_empty());
+        }
     }
 
     #[test]

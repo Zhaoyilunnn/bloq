@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use bloq_circuit::NoiseModel;
 use bloq_compile::{CompileConfig, CompileContext};
 use bloq_graph::GalleryItem;
+use bloq_ir::circuit::NoiseModel;
 use bloq_vm::DEFAULT_DECODER_LATENCY_ROUNDS;
 use bloq_vm::decoder::MockDecoderConfig;
 use bloq_vm::instruction::{Instruction, Program, QuantumOp, SourceRole, Stream};
@@ -23,7 +23,8 @@ fn lower_thth_with_timing(
     source_timing: SourceTiming,
     gate_duration: f64,
 ) -> Program {
-    let bloq = CompileContext::new(CompileConfig::new(distance))
+    // Full cultivation is the subject: authored resets, retries and factory GAP timing.
+    let bloq = CompileContext::new(CompileConfig::new(distance).with_prepare_t_with_mpps(false))
         .compile(&GalleryItem::THTH.build())
         .expect("THTH compiles")
         .bloq;

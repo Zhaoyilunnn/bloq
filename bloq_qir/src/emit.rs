@@ -27,39 +27,7 @@ pub(super) struct Emitter<'a> {
 }
 
 pub(super) fn emit(program: &Program, options: &QirOptions) -> Result<QirArtifact> {
-    bloq_vm::runtime::validate_program(program).map_err(|error| invalid(error.to_string()))?;
-    if !program.inputs.is_empty() || !program.outputs.is_empty() {
-        return Err(unsupported(
-            "logical patch I/O requires authored preparation and terminal readout",
-        ));
-    }
-    if options.max_attempts == 0 || options.max_wait_rounds == 0 {
-        return Err(invalid("execution bounds must be positive"));
-    }
-    if program.tasks.len() > 100_000
-        || program.bit_count > 1_000_000
-        || program.record_count > 1_000_000
-    {
-        return Err(invalid("program exceeds emission limits"));
-    }
-    let mut bindings = BTreeSet::new();
-    for binding in &options.decoders {
-        if !bindings.insert(binding.observable)
-            || binding.syndrome.is_empty()
-            || binding.correction_count == 0
-            || binding.correction_count > 64
-            || binding.correction_bit >= binding.correction_count
-            || !matches!(
-                program
-                    .tasks
-                    .get(binding.observable as usize)
-                    .map(|task| &task.instruction),
-                Some(Instruction::Observable { .. })
-            )
-        {
-            return Err(invalid("invalid or duplicate decoder binding"));
-        }
-    }
+    crate::validation::validate_qir_input(program, options)?;
     let mut e = Emitter {
         program,
         options,

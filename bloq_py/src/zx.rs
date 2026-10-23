@@ -13,8 +13,8 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use crate::errors;
-use crate::graph::{PyBlockGraph, PyStabilizerGenerator};
-use crate::primitives::{ivec3_from, ivec3_into, py_bool};
+use crate::graph::PyBlockGraph;
+use crate::primitives::py_bool;
 
 /// ZX analysis failures are graph-level diagnoses, so they map onto the same
 /// exception as other `BlockGraph` analysis errors.
@@ -56,7 +56,7 @@ impl PyZXNode {
     /// The node's `(x, y, z)` position.
     #[getter]
     fn pos(&self) -> (i32, i32, i32) {
-        ivec3_into(self.0.pos)
+        self.0.pos.into()
     }
 
     /// The node kind: `"X"`, `"Y"`, `"Z"`, `"Port"`, `"T"`, or
@@ -88,7 +88,7 @@ impl PyZXNode {
         format!(
             "<ZXNode id={} pos={:?} kind=\"{}\">",
             self.0.id,
-            ivec3_into(self.0.pos),
+            self.pos(),
             self.0.kind
         )
     }
@@ -227,7 +227,7 @@ impl PyZXGraph {
     /// Args:
     ///     pos: The `(x, y, z)` position to look up.
     fn node_at(&self, pos: (i32, i32, i32)) -> Option<PyZXNode> {
-        self.0.node_at(ivec3_from(pos)).copied().map(Into::into)
+        self.0.node_at(pos.into()).copied().map(Into::into)
     }
 
     /// Neighbor node ids of `node_id`, or `None` for an unknown id.
@@ -304,21 +304,6 @@ impl PyZXGraph {
     ///     BlockGraphError: If the actions do not form a runnable program.
     fn validate_for_program(&self) -> PyResult<()> {
         self.0.validate_for_program().map_err(zx_err)
-    }
-
-    /// Derives the stabilizer generators of the diagram.
-    ///
-    /// Raises:
-    ///     BlockGraphError: If the stabilizers cannot be derived.
-    fn stabilizers(&self) -> PyResult<Vec<PyStabilizerGenerator>> {
-        Ok(self
-            .0
-            .stabilizers()
-            .map_err(zx_err)?
-            .generators
-            .into_iter()
-            .map(Into::into)
-            .collect())
     }
 
     fn __repr__(&self) -> String {

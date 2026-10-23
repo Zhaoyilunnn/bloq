@@ -127,6 +127,7 @@ __all__ = [
     "is_valid_distance",
     "lower_vm",
     "remap_stim_circuit",
+    "run_noiseless",
     "stim_to_clifft_text",
     "to_zx_graph",
 ]
@@ -803,11 +804,12 @@ class BlockGraph:
         """
     def stabilizers(self) -> builtins.list[StabilizerGenerator]:
         r"""
-        Derives the stabilizer generators of the graph's ZX diagram.
-        Call `flatten()` first if the graph contains child instances.
+        The correlation surfaces of the displayed branch arms, from the causal
+        readout plan that compilation uses: one row per named readout, output
+        frame, and closed logical surface. Module hierarchies are composed.
 
         Raises:
-            BlockGraphError: If the stabilizers cannot be derived.
+            BlockGraphError: If the source is invalid or a readout is unavailable.
 
         Examples:
             >>> import bloq
@@ -2005,8 +2007,11 @@ class Bloq:
         Examples:
             >>> import bloq
             >>> program = bloq.compile(bloq.GalleryItem.X_MEMORY.load(), distance=3)
-            >>> sorted(program.stable_key_map().values())
-            [0, 2]
+            >>> keys = program.stable_key_map()
+            >>> len(keys)
+            2
+            >>> all(program.node(node_id) is not None for node_id in keys.values())
+            True
         """
     def resolve_classical(self, node: builtins.int, *, output: ObservableOutput = ObservableOutput.Corrected, pins: typing.Optional[builtins.bool] = None, forced_observables: typing.Optional[typing.Mapping[builtins.int, builtins.bool]] = None) -> ClassicalResolution:
         r"""
@@ -3447,6 +3452,15 @@ class InstanceProvenance:
         def part(self) -> builtins.str: ...
         def __new__(cls, source: tuple[builtins.int, builtins.int, builtins.int], role: builtins.str, part: builtins.str) -> InstanceProvenance.SpatialPortSubstitution: ...
 
+    @typing.final
+    class IdealPortAdapter(InstanceProvenance):
+        __match_args__ = ("source", "role",)
+        @property
+        def source(self) -> tuple[builtins.int, builtins.int, builtins.int]: ...
+        @property
+        def role(self) -> builtins.str: ...
+        def __new__(cls, source: tuple[builtins.int, builtins.int, builtins.int], role: builtins.str) -> InstanceProvenance.IdealPortAdapter: ...
+
 
 class InvalidArgumentError(BloqError):
     r"""
@@ -4331,12 +4345,10 @@ class StabilizerGenerator:
     r"""
     A stabilizer generator row: a stabilizer plus its role.
 
-    One row of the generator basis returned by `BlockGraph.stabilizers()` or
-    `ZXGraph.stabilizers()`. The `kind` says what the row does: `"logical"`
-    rows generate the diagram's logical stabilizer group, `"measurement"` rows
-    witness a named measurement variable, and `"selective_fixing"` rows pin
-    the measurement basis of one or more selective nodes. Internal rank rows
-    are not exposed through the graph API.
+    One correlation surface returned by `BlockGraph.stabilizers()` or
+    `fill_ports_auto()`. The `kind` says what the row does: `"measurement"`
+    rows read a named measurement variable, and `"logical"` rows are output
+    frames or closed logical surfaces.
     """
     @property
     def stabilizer(self) -> Stabilizer:
@@ -4346,7 +4358,7 @@ class StabilizerGenerator:
     @property
     def kind(self) -> builtins.str:
         r"""
-        The row's role: `"measurement"`, `"selective_fixing"`, or `"logical"`.
+        The row's role: `"measurement"` or `"logical"`.
         """
     @property
     def is_measurement(self) -> builtins.bool:
@@ -4357,11 +4369,6 @@ class StabilizerGenerator:
     def measurement_name(self) -> typing.Optional[builtins.str]:
         r"""
         The measurement variable name, for `"measurement"` rows.
-        """
-    @property
-    def selective_fixing_targets(self) -> builtins.list[tuple[tuple[builtins.int, builtins.int, builtins.int], Pauli]]:
-        r"""
-        `(position, forbidden_pauli)` pairs, for `"selective_fixing"` rows.
         """
     def __eq__(self, other: builtins.object, /) -> builtins.bool: ...
     def __repr__(self) -> builtins.str: ...
@@ -5238,13 +5245,6 @@ class ZXGraph:
         Raises:
             BlockGraphError: If the actions do not form a runnable program.
         """
-    def stabilizers(self) -> builtins.list[StabilizerGenerator]:
-        r"""
-        Derives the stabilizer generators of the diagram.
-
-        Raises:
-            BlockGraphError: If the stabilizers cannot be derived.
-        """
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
@@ -5469,7 +5469,8 @@ def _run_cli(args: typing.Sequence[builtins.str]) -> builtins.int:
 
 def clear_compile_cache() -> None:
     r"""
-    Drops every circuit template cached by `compile`, releasing their memory.
+    Drops templates, module artifacts, and summaries cached by `compile` and
+    Clifford proxy compilation, releasing their memory.
 
     `compile` caches templates process-wide and never evicts them, so a process
     that compiles at many code distances — a distance sweep, say — keeps every
@@ -5898,6 +5899,42 @@ def remap_stim_circuit(text: builtins.str, qubit_map: typing.Mapping[builtins.in
 
     Raises:
         InvalidArgumentError: If Stim text or a requested mapping is invalid.
+    """
+
+def run_noiseless(program: Bloq, *, shots: builtins.int = 1, seed: builtins.int = 0, input_state: builtins.str = 'plus', include_signature: builtins.bool = False) -> dict[str, object]:
+    r"""
+    Execute compiled physical circuits without added noise or hardware timing.
+
+    Native retry regions and adaptive controls execute normally. External input
+    states and output capture are ideal boundaries. Capturing an output before
+    its physical patch is reused preserves joint output coherence on a private
+    simulator qubit. This function does not replace T circuits with proxies.
+
+    Args:
+        program: Compiled Bloq IR, including any native T retry circuits.
+        shots: Positive number of physical shots.
+        seed: Root simulator seed.
+        input_state: State of every external input, ``"plus"`` or ``"zero"``.
+        include_signature: Include all joint Pauli expectations for at most six
+            logical outputs. This makes ``4**n - 1`` exact expectation reads.
+
+    Returns:
+        A JSON-ready dictionary with ``shots``, ``discarded``, ``peak_rank``,
+        ``output_ports``, ``detectors``, ``all_detectors_constant``, and accepted
+        ``samples``. Each sample contains corrected ``logical_bloch`` vectors,
+        ``captured_output_ports``, ``named_selectors``, and an optional
+        ``logical_signature``. Output order matches ``program.logical_outputs()``.
+        Signature index ``k - 1`` is Pauli word ``k`` in base four, with output
+        zero as the least-significant digit and digits ``I, X, Y, Z``.
+        Discarded shots have no sample. Detector constancy concerns applicable
+        accepted shots; an empty detector history is vacuously constant.
+        Checks spanning ideal input replacement are omitted, because their
+        earlier syndrome records describe the state before replacement.
+
+    Raises:
+        InvalidArgumentError: For zero shots, an invalid input state, or a
+            requested signature with more than six outputs.
+        RuntimeError: If physical execution or logical readout fails.
     """
 
 def stim_to_clifft_text(text: builtins.str) -> builtins.str:

@@ -28,7 +28,9 @@ permissions:
 jobs:
   upload:
     name: ${{ matrix.target }}
-    if: github.repository == 'inmzhang/bloq' && vars.RELEASE_PUBLISH_ENABLED == 'true'
+    if: >-
+      github.repository == 'inmzhang/bloq' && vars.RELEASE_PUBLISH_ENABLED == 'true' &&
+      !contains(github.event.release.tag_name || inputs.tag, '-')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -58,9 +60,9 @@ jobs:
             libxkbcommon-dev
 
       - name: Install Python for release packaging
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.11'
+          python-version: '3.15'
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install --target ${{ matrix.target }}

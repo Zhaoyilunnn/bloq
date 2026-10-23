@@ -1,6 +1,8 @@
 default:
     @just --list --justfile {{ justfile() }}
 
+import 'tools/release.just'
+
 [group('security')]
 audit:
     cargo audit
@@ -21,6 +23,11 @@ check-no-default:
 [group('development')]
 doc-check:
     RUSTDOCFLAGS="-D warnings -D missing_docs" cargo doc --workspace --all-features --no-deps --locked
+
+# Check the Markdown examples embedded by the facade without building the editor.
+[group('development')]
+doc-test:
+    cargo test --doc -p bloq --all-features --locked
 
 # Check the inherited workspace MSRV by selecting the facade by name.
 [group('development')]
@@ -104,16 +111,6 @@ profile-all stage="compile" distance="11" duration="5":
         just profile-case "$slug" {{ stage }} {{ distance }} {{ duration }}
     done
 
-# regenerate target/benchmark/index.html and target/benchmark/data.json from Criterion
-# output and recorded profiles
-[group('benchmark')]
-bench-report:
-    cargo run -q -p xtask -- bench-report
-
-# full pipeline: all benchmarks, all profiles (both stages), then the report
-[group('benchmark')]
-bench-full: bench-all (profile-all "compile") (profile-all "stim") bench-report
-
 [group('development')]
 test-case-list filter="":
     cargo run -q -p xtask -- list-cases {{ if filter != "" { "--filter " + filter } else { "" } }}
@@ -148,12 +145,7 @@ miri:
 [group('development')]
 pre-release: check test-full lint audit miri
 
-[group('production')]
-release: pre-release
-    cargo build --release
-
-# lint + nextest + doctests, all features and locked. Test bloq_py separately
-# to avoid sibling profiling features entering its cdylib through unification.
+# lint + nextest + doctests, all features and locked. Test bloq_py separately.
 # Its rustdoc is Python docstring source; the empty doctest pass detects accidental
 # Rust code blocks. Binary-only crates have no doctest target.
 [group('development')]
@@ -165,10 +157,20 @@ test crate="": (lint crate)
 
 # Run every native CI suite locally; Actions gives each its own job and budget.
 [group('development')]
-ci: ci-rust msrv ci-python
+ci: ci-fast ci-rust msrv ci-python
+
+# No project compilation; safe to run before approving the full CI suites.
+[group('development')]
+ci-fast: fmt-check py-lint editor-package-check release-build-check
+    python3 tools/test_site.py
 
 [group('development')]
-ci-rust: fmt-check licenses-check editor-package-check release-build-check check check-no-default doc-check test
+ci-rust: licenses-check check check-no-default doc-check test
+
+# Full optimized website assembly and publication run separately.
+[group('website')]
+ci-site: py-docs
+    cargo check -p bloq_editor --target wasm32-unknown-unknown --locked
 
 # Tests and docs share one editable extension build and Python environment.
 [group('python')]
@@ -209,8 +211,8 @@ py-develop:
     uv sync --project bloq_py --group dev --locked
 
 [group('python')]
-py-lint: py-develop
-    uv run --project bloq_py --no-sync ruff check --config bloq_py/pyproject.toml bloq_py/python bloq_py/tests bloq_py/examples tools bloq_editor/desktop
+py-lint:
+    UV_PROJECT_ENVIRONMENT="{{ justfile_directory() }}/target/py-lint" uv run --project bloq_py --locked --only-group dev ruff check --config bloq_py/pyproject.toml bloq_py/python bloq_py/tests bloq_py/examples tools bloq_editor/desktop
 
 [group('python')]
 py-typecheck: py-develop
@@ -223,11 +225,6 @@ py-build:
 [group('python')]
 py-sdist:
     uv build bloq_py --sdist --out-dir target/wheels
-
-# Preview only; release-plz writes CHANGELOG.md in the release PR.
-[group('production')]
-changelog:
-    uvx --from git-cliff git-cliff --config cliff.toml --unreleased
 
 # Generate annotated stubs and strip trailing whitespace. PYTHONHOME locates
 # stdlib on relocatable Python installs; perl supports both BSD and GNU hosts.
@@ -289,6 +286,7 @@ editor-package-check:
 [group('development')]
 release-build-check:
     uv run --no-project python tools/test_release_build.py
+    python3 tools/post_release.py --check
 
 [group('development')]
 licenses-check:
