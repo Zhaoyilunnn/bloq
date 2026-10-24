@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BranchStatus","VerifyLogicalError"],"fn":["verify_logical"],"struct":["BoundaryOrder","LogicalBranch","LogicalVerificationReport","LogicalVerifier"],"type":["BranchAssignment","QuizxGraph"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["QirEmissionError"],"fn":["emit_program_qir"],"struct":["DecoderBinding","QirArtifact","QirOptions"]};
